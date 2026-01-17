@@ -29,3 +29,5 @@ migrate_working_dir/
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
+third_party/libwebrtc/
+third_party/downloads
