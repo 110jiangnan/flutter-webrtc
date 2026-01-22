@@ -634,7 +634,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
           if (renderer.checkMediaStream(streamId, "local")) {
             synchronized (localTracks) {
               LocalTrack track = localTracks.get(trackId);
-              if(track != null) {
+              if(track != null && track.kind().equals("video")) {
                 renderer.setVideoTrack((VideoTrack) track.track);
               }
             }
