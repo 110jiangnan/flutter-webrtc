@@ -14,6 +14,7 @@ import 'src/get_user_media_sample.dart'
 import 'src/loopback_data_channel_sample.dart';
 import 'src/loopback_sample_unified_tracks.dart';
 import 'src/route_item.dart';
+import 'src/screen_capture_api_sample.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -112,6 +113,15 @@ class _MyAppState extends State<MyApp> {
                 MaterialPageRoute(
                     builder: (BuildContext context) =>
                         SysAudioSample()));
+          }),
+      RouteItem(
+          title: 'Screen Capture APIs',
+          push: (BuildContext context) {
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (BuildContext context) =>
+                        ScreenCaptureApiSample()));
           }),
       RouteItem(
           title: 'LoopBack Sample (Unified Tracks)',
