@@ -16,6 +16,7 @@
 #include "rtc_desktop_capturer.h"
 #include "rtc_desktop_device.h"
 #include "rtc_dtmf_sender.h"
+#include "rtc_frame_cryptor.h"
 #include "rtc_media_stream.h"
 #include "rtc_media_track.h"
 #include "rtc_mediaconstraints.h"
@@ -40,10 +41,13 @@ class FlutterWebRTCBase {
   friend class FlutterPeerConnectionObserver;
   friend class FlutterScreenCapture;
   friend class FlutterFrameCryptor;
+  friend class FlutterDataPacketCryptor;
   enum ParseConstraintType { kMandatory, kOptional };
 
  public:
-  FlutterWebRTCBase(BinaryMessenger* messenger, TextureRegistrar* textures, TaskRunner* task_runner);
+  FlutterWebRTCBase(BinaryMessenger* messenger,
+                    TextureRegistrar* textures,
+                    TaskRunner* task_runner);
   ~FlutterWebRTCBase();
 
   virtual scoped_refptr<RTCAudioProcessing> audio_processing() {
@@ -86,7 +90,6 @@ class FlutterWebRTCBase {
 
   EventChannelProxy* event_channel();
 
-
   libwebrtc::scoped_refptr<libwebrtc::RTCRtpSender> GetRtpSenderById(
       RTCPeerConnection* pc,
       std::string id);
@@ -94,6 +97,9 @@ class FlutterWebRTCBase {
   libwebrtc::scoped_refptr<libwebrtc::RTCRtpReceiver> GetRtpReceiverById(
       RTCPeerConnection* pc,
       std::string id);
+
+  libwebrtc::scoped_refptr<libwebrtc::KeyProvider> GetKeyProviderForId(
+      const std::string& keyProviderId);
 
  private:
   void ParseConstraints(const EncodableMap& src,
@@ -112,6 +118,7 @@ class FlutterWebRTCBase {
   scoped_refptr<RTCAudioProcessing> audio_processing_;
   RTCConfiguration configuration_;
 
+  std::map<std::string, scoped_refptr<libwebrtc::KeyProvider>> key_providers_;
   std::map<std::string, scoped_refptr<RTCPeerConnection>> peerconnections_;
   std::map<std::string, scoped_refptr<RTCMediaStream>> local_streams_;
   std::map<std::string, scoped_refptr<RTCMediaTrack>> local_tracks_;
@@ -130,7 +137,7 @@ class FlutterWebRTCBase {
 
  protected:
   BinaryMessenger* messenger_;
-  TaskRunner *task_runner_;
+  TaskRunner* task_runner_;
   TextureRegistrar* textures_;
   std::unique_ptr<EventChannelProxy> event_channel_;
 };
