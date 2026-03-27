@@ -1,7 +1,9 @@
 #include "flutter_webrtc.h"
 #include "flutter_data_channel.h"
+#include "sys_audio_manager.h"
 
 #include "flutter_webrtc/flutter_web_r_t_c_plugin.h"
+#include <sstream>
 
 namespace flutter_webrtc_plugin {
 
@@ -1286,7 +1288,106 @@ void FlutterWebRTC::HandleMethodCall(
       RTCLoggingSeverity severity = str2LogSeverity(severityStr);
       initLoggerCallback(severity);
     }
-  } else {
+  } else if (method_call.method_name().compare("GetSysAudioMedia") == 0) {
+    const EncodableMap params =GetValue<EncodableMap>(*method_call.arguments());
+
+    std::string deviceId = findString(params, "deviceId");
+    std::string streamId = findString(params, "streamId");
+    bool enablePcmRecording = findBoolean(params, "enablePcmRecording");
+    std::string pcmFilePath = findString(params, "pcmFilePath");
+
+    auto sys_audio_manager = SysAudioManager::GetInstance();
+
+    if (!sys_audio_manager->IsInitialized()) {
+      if (!sys_audio_manager->Initialize(factory_, deviceId)) {
+        result->Error("GetSysAudioMedia",
+                      "Failed to initialize system audio capture");
+        return;
+      }
+    }
+      
+    if (!sys_audio_manager->StartCapture()) {
+      result->Error("GetSysAudioMedia",
+                    "Failed to start system audio capture");
+      return;
+    }
+    
+    if (enablePcmRecording) {
+      sys_audio_manager->EnablePcmRecording(enablePcmRecording, pcmFilePath);
+    }
+      
+    auto stream = sys_audio_manager->CreateSysAudioMediaStream(factory_, streamId);
+      
+    if (!stream) {
+      result->Error("GetSysAudioMedia",
+                    "Failed to create system audio stream");
+      return;
+    }
+    std::cout << "add sys audio stream local_streams_: " << stream->id().std_string() << std::endl;
+    local_streams_[stream->id().std_string()] = stream;
+      
+    EncodableMap result_data;
+    result_data[EncodableValue("streamId")] =EncodableValue(stream->id().std_string());
+    result_data[EncodableValue("ownerTag")] = EncodableValue("local");
+      
+    EncodableList audioTracks;
+    auto audio_tracks = stream->audio_tracks();
+    for (scoped_refptr<RTCAudioTrack> track : audio_tracks.std_vector()) {
+      EncodableMap track_info;
+      track_info[EncodableValue("id")] = 
+          EncodableValue(track->id().std_string());
+      track_info[EncodableValue("label")] = 
+          EncodableValue(track->id().std_string());
+      track_info[EncodableValue("kind")] = 
+          EncodableValue(track->kind().std_string());
+      track_info[EncodableValue("enabled")] = 
+          EncodableValue(track->enabled());
+      
+      EncodableMap settings;
+      settings[EncodableValue("deviceId")] = EncodableValue(deviceId);
+      settings[EncodableValue("kind")] = EncodableValue("audioinput");
+      settings[EncodableValue("autoGainControl")] = EncodableValue(false);
+      settings[EncodableValue("echoCancellation")] = EncodableValue(false);
+      settings[EncodableValue("noiseSuppression")] = EncodableValue(false);
+      track_info[EncodableValue("settings")] = EncodableValue(settings);
+      
+      audioTracks.push_back(EncodableValue(track_info));
+    }
+    result_data[EncodableValue("audioTracks")] = EncodableValue(audioTracks);
+    
+    result_data[EncodableValue("videoTracks")] = EncodableValue(EncodableList());
+    
+    result->Success(EncodableValue(result_data));
+  } else if (method_call.method_name().compare("ReleaseSysAudioMedia") == 0) {
+    const EncodableMap params = GetValue<EncodableMap>(*method_call.arguments());
+    std::string streamId = findString(params, "streamId");
+    RemoveStreamForId(streamId);
+    SysAudioManager::DestroyInstance();
+    result->Success();
+  } else if (method_call.method_name().compare("EnableSysAudioPcmRecording") == 0) {
+    const EncodableMap params = GetValue<EncodableMap>(*method_call.arguments());
+    bool enable = findBoolean(params, "enable");
+    std::string filePath = findString(params, "filePath");
+    
+    if (filePath.empty()) {
+      std::stringstream ss;
+      ss << "E:/sys_audio_" << ".pcm";
+      filePath = ss.str();
+    }
+    
+    if (filePath.find("E:/") != 0 && filePath.find("E:\\") != 0) {
+      filePath = "E:/" + filePath;
+    }
+    
+    auto sys_audio_manager = SysAudioManager::GetInstance();
+    sys_audio_manager->EnablePcmRecording(enable, filePath);
+    
+    EncodableMap result_data;
+    result_data[EncodableValue("enabled")] = EncodableValue(enable);
+    result_data[EncodableValue("filePath")] = EncodableValue(filePath);
+    result->Success(EncodableValue(result_data));
+  }
+  else {
     if (HandleFrameCryptorMethodCall(method_call, std::move(result), &result)) {
       return;
     } else {

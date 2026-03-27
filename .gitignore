@@ -31,3 +31,4 @@ migrate_working_dir/
 build/
 third_party/libwebrtc/
 third_party/downloads
+android/.gradle
