@@ -46,6 +46,7 @@ class SysAudioSource : public RTCAudioSource {
                     int sample_rate, size_t number_of_channels,
                     size_t number_of_frames) override {
     if (enable_pcm_recording_ && pcm_file_.is_open()) {
+//      std::cout << bits_per_sample << " " << sample_rate << " " << number_of_channels << " " << number_of_frames << std::endl;
       pcm_file_.write(static_cast<const char*>(audio_data),
                       bits_per_sample / 8 * number_of_channels * number_of_frames);
       pcm_file_.flush();

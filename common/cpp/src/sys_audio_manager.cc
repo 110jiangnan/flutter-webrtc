@@ -7,33 +7,14 @@
 
 namespace flutter_webrtc_plugin {
 
-static std::string GenerateUUID() {
-  std::random_device rd;
-  std::mt19937_64 gen(rd());
-  std::uniform_int_distribution<uint64_t> dist;
-  
-  auto uuid = dist(gen);
-  std::stringstream ss;
-  ss << std::hex << std::setfill('0');
-  ss << std::setw(8) << (uuid >> 32) << '-';
-  ss << std::setw(4) << ((uuid >> 16) & 0xFFFF) << '-';
-  ss << std::setw(4) << (uuid & 0xFFFF) << '-';
-  ss << std::setw(4) << ((uuid >> 48) & 0xFFFF) << '-';
-  ss << std::setw(12) << (dist(gen) & 0xFFFFFFFFFFFFULL);
-  
-  return ss.str();
-}
-
 SysAudioManager* SysAudioManager::g_instance = nullptr;
 std::mutex SysAudioManager::g_mutex;
 
 SysAudioManager* SysAudioManager::GetInstance() {
   std::lock_guard<std::mutex> lock(g_mutex);
-  
   if (!g_instance) {
     g_instance = new SysAudioManager();
   }
-  
   return g_instance;
 }
 
@@ -61,10 +42,9 @@ SysAudioManager::~SysAudioManager() {
 }
 
 bool SysAudioManager::Initialize(
-    scoped_refptr<RTCPeerConnectionFactory> factory,
+    FlutterWebRTCBase* base,
     const std::string& device_id) {
-  
-  if (!factory) {
+  if (!base->factory_) {
     std::cout << "Invalid factory pointer" << std::endl;
     return false;
   }
@@ -73,15 +53,13 @@ bool SysAudioManager::Initialize(
     std::cout << "Already initialized" << std::endl;
     return true;
   }
-  
-  audio_source_ = new RefCountedObject<SysAudioSource>(factory, "sys_audio_capture");
+  audio_source_ = new RefCountedObject<SysAudioSource>(base->factory_, "sys_audio_capture");
 
   if (!audio_source_->rtc_audio_source()) {
     std::cout << "Failed to create sys audio source" << std::endl;
     return false;
   }
 
-  // 鍒濆�鍖栭煶棰戞崟鑾峰櫒
   if (!audio_source_->Initialize(device_id)) {
     std::cout << "Failed to initialize audio capturer" << std::endl;
     audio_source_ = nullptr;
@@ -92,20 +70,17 @@ bool SysAudioManager::Initialize(
     audio_source_ = nullptr;
     return false;
   }
-
   current_device_id_ = device_id;
   is_initialized_ = true;
-
   std::cout << "SysAudioManager initialized with device: "
             << (device_id.empty() ? "default" : device_id) << std::endl;
   return true;
 }
 
 scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
-    scoped_refptr<RTCPeerConnectionFactory> factory,
-    const std::string& stream_id) {
-  
-  if (!factory) {
+    FlutterWebRTCBase* base,
+    const std::string& stream_id, EncodableMap& params) {
+  if (!base->factory_) {
     std::cout << "Invalid factory pointer" << std::endl;
     return nullptr;
   }
@@ -116,22 +91,47 @@ scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
   }
   
 #if defined(_WIN32) || defined(WINDOWS)
-  auto audio_track = CreateSysAudioTrack(factory, "");
+  auto audio_track = CreateSysAudioTrack(base, "");
   if (!audio_track) {
     std::cout << "Failed to create audio track" << std::endl;
     return nullptr;
   }
-  std::string actual_stream_id = stream_id.empty() ?GenerateUUID() : stream_id;
-  scoped_refptr<RTCMediaStream> stream =factory->CreateStream(actual_stream_id.c_str());
+  std::string actual_stream_id = stream_id.empty() ? base->GenerateUUID() : stream_id;
+  scoped_refptr<RTCMediaStream> stream = base->factory_->CreateStream(actual_stream_id.c_str());
   
   if (!stream) {
     std::cout << "Failed to create media stream" << std::endl;
     return nullptr;
   }
-  
+  base->local_tracks_[audio_track->id().std_string()] = audio_track;
   stream->AddTrack(audio_track);
-  
   std::cout << "Created sys audio stream: " << actual_stream_id << std::endl;
+
+  params[EncodableValue("streamId")] =EncodableValue(stream->id().std_string());
+  params[EncodableValue("ownerTag")] = EncodableValue("local");
+
+  EncodableList audioTracks;
+
+  EncodableMap track_info;
+  track_info[EncodableValue("id")] = EncodableValue(audio_track->id().std_string());
+  track_info[EncodableValue("label")] = EncodableValue(audio_track->id().std_string());
+  track_info[EncodableValue("kind")] = EncodableValue(audio_track->kind().std_string());
+  track_info[EncodableValue("enabled")] = EncodableValue(audio_track->enabled());
+
+  EncodableMap settings;
+  settings[EncodableValue("deviceId")] = EncodableValue(current_device_id_);
+  settings[EncodableValue("kind")] = EncodableValue("audioinput");
+  settings[EncodableValue("autoGainControl")] = EncodableValue(false);
+  settings[EncodableValue("echoCancellation")] = EncodableValue(false);
+  settings[EncodableValue("noiseSuppression")] = EncodableValue(false);
+  settings[EncodableValue("channelCount")] = EncodableValue(2);
+  track_info[EncodableValue("settings")] = EncodableValue(settings);
+
+  audioTracks.push_back(EncodableValue(track_info));
+
+  params[EncodableValue("audioTracks")] = EncodableValue(audioTracks);
+  params[EncodableValue("videoTracks")] = EncodableValue(EncodableList());
+
   return stream;
 #else
   std::cout << "System audio stream not available on this platform" << std::endl;
@@ -140,10 +140,9 @@ scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
 }
 
 scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
-    scoped_refptr<RTCPeerConnectionFactory> factory,
+    FlutterWebRTCBase* base,
     const std::string& track_id) {
-  
-  if (!factory) {
+  if (!base->factory_) {
     std::cout << "Invalid factory pointer";
     return nullptr;
   }
@@ -154,9 +153,9 @@ scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
   }
   
 #if defined(_WIN32) || defined(WINDOWS)
-  std::string actual_track_id = track_id.empty() ? GenerateUUID() : track_id;
+  std::string actual_track_id = track_id.empty() ? base->GenerateUUID() : track_id;
   
-  auto audio_track = factory->CreateAudioTrack(
+  auto audio_track = base->factory_->CreateAudioTrack(
       audio_source_->rtc_audio_source(), 
       actual_track_id.c_str());
   
@@ -164,9 +163,7 @@ scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
     std::cout << "Failed to create audio track" << std::endl;
     return nullptr;
   }
-  
   std::cout << "Created sys audio track: " << actual_track_id << std::endl;
-  
   return audio_track;
 #else
   std::cout << "System audio track not available on this platform" << std::endl;

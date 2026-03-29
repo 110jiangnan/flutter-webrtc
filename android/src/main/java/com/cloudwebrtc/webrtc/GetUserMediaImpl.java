@@ -116,7 +116,7 @@ public class GetUserMediaImpl {
     private final SparseArray<MediaRecorderImpl> mediaRecorders = new SparseArray<>();
     private AudioDeviceInfo preferredInput = null;
     private boolean isTorchOn;
-    private Intent mediaProjectionData = null;
+    public Intent mediaProjectionData = null;
 
 
     public void screenRequestPermissions(ResultReceiver resultReceiver) {

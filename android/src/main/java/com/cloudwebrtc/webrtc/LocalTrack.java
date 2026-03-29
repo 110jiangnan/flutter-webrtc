@@ -3,6 +3,8 @@ package com.cloudwebrtc.webrtc;
 import org.webrtc.MediaStreamTrack;
 
 public class LocalTrack {
+    public String sType = "audio";
+
     public LocalTrack(MediaStreamTrack track) {
         this.track = track;
     }

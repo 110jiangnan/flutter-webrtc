@@ -32,7 +32,7 @@ WinSysAudioCapturer::WinSysAudioCapturer() {
 WinSysAudioCapturer::~WinSysAudioCapturer() {
   StopCapture();
   Release();
-  std::cout << "WinSysAudioCapturer destroyed";
+  std::cout << "WinSysAudioCapturer destroyed" << std::endl;
 }
 
 bool WinSysAudioCapturer::Initialize(const std::string& device_id) {
@@ -87,26 +87,82 @@ bool WinSysAudioCapturer::Initialize(const std::string& device_id) {
     return false;
   }
 
-  std::cout << "Audio format - SampleRate: " << wave_format_->nSamplesPerSec
-                   << ", Channels: " << wave_format_->nChannels
-                   << ", BitsPerSample: " << wave_format_->wBitsPerSample;
+  WAVEFORMATEXTENSIBLE Wfx = WAVEFORMATEXTENSIBLE();
+  WAVEFORMATEX* pWfxClosestMatch = NULL;
 
+  Wfx.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+  Wfx.Format.wBitsPerSample = 16;
+  Wfx.Format.cbSize = 22;
+  Wfx.dwChannelMask = 0;
+  Wfx.Samples.wValidBitsPerSample = Wfx.Format.wBitsPerSample;
+  Wfx.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+
+  const int freqs[6] = {48000, 44100, 16000, 96000, 32000, 8000};
+  hr = S_FALSE;
+
+  // Iterate over frequencies and channels, in order of priority
+  for (unsigned int freq = 0; freq < sizeof(freqs) / sizeof(freqs[0]); freq++) {
+    for (unsigned int chan = 0; chan < sizeof(_recChannelsPrioList) / sizeof(_recChannelsPrioList[0]); chan++) {
+      Wfx.Format.nChannels = _recChannelsPrioList[chan];
+      Wfx.Format.nSamplesPerSec = freqs[freq];
+      Wfx.Format.nBlockAlign =
+          Wfx.Format.nChannels * Wfx.Format.wBitsPerSample / 8;
+      Wfx.Format.nAvgBytesPerSec =
+          Wfx.Format.nSamplesPerSec * Wfx.Format.nBlockAlign;
+      hr = audio_client_->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, (WAVEFORMATEX*)&Wfx, &pWfxClosestMatch);
+      if (hr == S_OK) {
+        break;
+      } else {
+        if (pWfxClosestMatch) {
+          std::cout << "nChannels=" << Wfx.Format.nChannels
+                    << ", nSamplesPerSec=" << Wfx.Format.nSamplesPerSec
+                    << " is not supported. Closest match: "
+                       "nChannels="
+                    << pWfxClosestMatch->nChannels << ", nSamplesPerSec="
+                    << pWfxClosestMatch->nSamplesPerSec << std::endl;
+          CoTaskMemFree(pWfxClosestMatch);
+          pWfxClosestMatch = NULL;
+        } else {
+          std::cout << "nChannels=" << Wfx.Format.nChannels
+                    << ", nSamplesPerSec=" << Wfx.Format.nSamplesPerSec
+                    << " is not supported. No closest match." << std::endl;
+        }
+      }
+    }
+    if (hr == S_OK)
+      break;
+  }
+  CoTaskMemFree(pWfxClosestMatch);
+  if (FAILED(hr)) {
+    std::cout << "fail to set audio format to webrtc" << hr << std::endl;
+    CleanupCOM();
+    return false;
+  }
+
+  std::cout << "window default Audio format - SampleRate: " << wave_format_->nSamplesPerSec
+                   << ", Channels: " << wave_format_->nChannels
+                   << ", BitsPerSample: " << wave_format_->wBitsPerSample << std::endl;
+  std::cout << "set Audio format - SampleRate: " << Wfx.Format.nSamplesPerSec
+            << ", Channels: " << Wfx.Format.nChannels
+            << ", BitsPerSample: " << Wfx.Format.wBitsPerSample << std::endl;
+
+  preferred_sample_rate_ = Wfx.Format.nSamplesPerSec;
+  preferred_bits_per_sample_ = Wfx.Format.wBitsPerSample;
+  preferred_channels_ = Wfx.Format.nChannels;
   hr = audio_client_->Initialize(
       AUDCLNT_SHAREMODE_SHARED,
       AUDCLNT_STREAMFLAGS_LOOPBACK,
-      100000, 0, wave_format_, nullptr);
+      100000, 0, (WAVEFORMATEX*)&Wfx, nullptr);
   
   if (FAILED(hr)) {
-    std::cout << "Failed to initialize audio client with LOOPBACK mode: " << hr;
-    std::cout << "Error code: " << hr;
-    std::cout << "Make sure 'Stereo Mix' is enabled in Sound settings";
+    std::cout << "Failed to initialize audio client with LOOPBACK mode: " << hr << std::endl;
     CleanupCOM();
     return false;
   }
 
   hr = audio_client_->GetBufferSize(&buffer_frame_count_);
   if (FAILED(hr)) {
-    std::cout << "Failed to get buffer size: " << hr;
+    std::cout << "Failed to get buffer size: " << hr << std::endl;
     CleanupCOM();
     return false;
   }
@@ -133,7 +189,6 @@ bool WinSysAudioCapturer::StartCapture() {
     std::cout << "Not initialized" << std::endl;
     return false;
   }
-
   should_stop_ = false;
   
   HRESULT hr = audio_client_->Start();
@@ -141,7 +196,6 @@ bool WinSysAudioCapturer::StartCapture() {
     std::cout << "Failed to start audio client: " << hr << std::endl;
     return false;
   }
-
   is_capturing_ = true;
   capture_thread_ = std::thread(&WinSysAudioCapturer::CaptureThread, this);
   
@@ -229,15 +283,15 @@ void WinSysAudioCapturer::CaptureThread() {
         break;
       }
 
-      int bits_per_sample = wave_format_->wBitsPerSample;
-      int sample_rate = wave_format_->nSamplesPerSec;
-      size_t number_of_channels = wave_format_->nChannels;
+      int bits_per_sample = preferred_bits_per_sample_;
+      int sample_rate = preferred_sample_rate_;
+      size_t number_of_channels = preferred_channels_;
       size_t number_of_frames = num_frames_to_read;
 
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if (callback_) {
-          callback_(data, bits_per_sample, sample_rate, 
+          callback_(data, bits_per_sample, sample_rate,
                    number_of_channels, number_of_frames, user_data_);
         }
       }
@@ -258,7 +312,7 @@ void WinSysAudioCapturer::CaptureThread() {
     Sleep(5);
   }
 
-  std::cout << "Capture thread stopped";
+  std::cout << "Capture thread stopped" << std::endl;
 }
 
 std::vector<std::pair<std::string, std::string>> 

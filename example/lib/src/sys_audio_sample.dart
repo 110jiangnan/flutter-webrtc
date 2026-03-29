@@ -1,15 +1,19 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_background/flutter_background.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:flutter_webrtc/src/sys_audio_manager.dart';
+import 'package:path_provider/path_provider.dart';
 
 /// 系统音频捕获示例
 /// System Audio Capture Sample
 class SysAudioSample extends StatefulWidget {
   @override
-  _SysAudioSampleState createState() => _SysAudioSampleState();
+  SysAudioSampleState createState() => SysAudioSampleState();
 }
 
-class _SysAudioSampleState extends State<SysAudioSample> {
+class SysAudioSampleState extends State<SysAudioSample> {
   MediaStream? _sysAudioStream;
   RTCPeerConnection? _peerConnection;
   bool _isCapturing = false;
@@ -44,11 +48,24 @@ class _SysAudioSampleState extends State<SysAudioSample> {
 
   Future<void> _startSysAudioCapture() async {
     try {
+      final tempDir = await getTemporaryDirectory();
+      var pcmFilePath = 'E:/pcm.pcm';
+      if (Platform.isAndroid) {
+        pcmFilePath = '${tempDir.path}/pcm11.pcm';
+      } else if (Platform.isLinux) {
+        pcmFilePath = '${tempDir.path}/pcm.pcm';
+      } else if (Platform.isMacOS) {
+        pcmFilePath = '${tempDir.path}/pcm.pcm';
+      }
+      print('pcm 文件路径：$pcmFilePath');
+      if (WebRTC.platformIsAndroid) {
+        await requestBackgroundPermission();
+      }
       final result = await SysAudioManager.getSysAudioMedia(
         deviceId: _selectedDeviceId,
         streamId: '',
         enablePcmRecording: true,
-        pcmFilePath: 'E:/pcm.pcm',
+        pcmFilePath: pcmFilePath,
       );
 
       setState(() {
@@ -70,10 +87,8 @@ class _SysAudioSampleState extends State<SysAudioSample> {
           await track.stop();
         }
 
-        // 调用 ReleaseSysAudioMedia
+        // 调用 ReleaseSysAudioMedia _sysAudioStream 已经被释放掉了，无需再dispose
         await SysAudioManager.releaseSysAudioMedia(_sysAudioStream!.id);
-
-        await _sysAudioStream!.dispose();
         _sysAudioStream = null;
 
         setState(() {
@@ -84,6 +99,39 @@ class _SysAudioSampleState extends State<SysAudioSample> {
       }
     } catch (e) {
       print('停止系统音频捕获失败：$e');
+    }
+  }
+
+  static Future<bool> requestBackgroundPermission([bool isRetry = false]) async {
+    try {
+      final isGranted = await Helper.requestCapturePermission();
+      if (!isGranted) {
+        throw '请授予系统音频捕获权限';
+      }
+      var hasPermissions = await FlutterBackground.hasPermissions;
+      if (!isRetry) {
+        const androidConfig = FlutterBackgroundAndroidConfig(
+          notificationTitle: 'Screen Sharing',
+          notificationText: 'LiveKit Example is sharing the screen.',
+          notificationImportance: AndroidNotificationImportance.normal,
+          notificationIcon: AndroidResource(
+              name: 'livekit_ic_launcher', defType: 'mipmap'),
+        );
+        hasPermissions = await FlutterBackground.initialize(
+            androidConfig: androidConfig);
+      }
+      if (hasPermissions &&
+          !FlutterBackground.isBackgroundExecutionEnabled) {
+        await FlutterBackground.enableBackgroundExecution();
+      }
+      return true;
+    } catch (e) {
+      if (!isRetry) {
+        return await Future<bool>.delayed(const Duration(seconds: 1),
+                () => requestBackgroundPermission(true));
+      }
+      print('could not publish video: $e');
+      return false;
     }
   }
 
@@ -161,7 +209,7 @@ class _SysAudioSampleState extends State<SysAudioSample> {
             ],
 
             // 控制按钮
-            Row(
+            Wrap(
               children: [
                 ElevatedButton(
                   onPressed: _isCapturing ? null : _startSysAudioCapture,

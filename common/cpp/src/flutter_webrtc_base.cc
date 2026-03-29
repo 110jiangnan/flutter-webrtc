@@ -109,6 +109,7 @@ scoped_refptr<RTCMediaStream> FlutterWebRTCBase::MediaStreamForId(
     }
   }
 
+  std::cout << "MediaStreamForId: " << id << std::endl;
   auto it = local_streams_.find(id);
   if (it != local_streams_.end()) {
     return (*it).second;

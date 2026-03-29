@@ -53,7 +53,8 @@ class WinSysAudioCapturer {
   IAudioCaptureClient* capture_client_ = nullptr;
   IMMDeviceEnumerator* device_enumerator_ = nullptr;
   IMMDevice* device_ = nullptr;
-  
+
+  uint16_t _recChannelsPrioList[2] = {2, 1};
   WAVEFORMATEX* wave_format_ = nullptr;
   
   std::thread capture_thread_;
@@ -67,6 +68,10 @@ class WinSysAudioCapturer {
 
   UINT32 buffer_frame_count_ = 0;
   DWORD flags_ = 0;
+
+  int preferred_sample_rate_ = 48000;      // 48kHz sample rate
+  int preferred_bits_per_sample_ = 16;     // 16-bit depth
+  int preferred_channels_ = 2;             // Stereo (2 channels)
 };
 
 }  // namespace flutter_webrtc_plugin

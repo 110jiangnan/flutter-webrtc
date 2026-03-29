@@ -6,6 +6,8 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include "flutter_common.h"
+#include "flutter_webrtc_base.h"
 
 namespace flutter_webrtc_plugin {
 
@@ -17,15 +19,15 @@ class SysAudioManager {
   
   static void DestroyInstance();
   
-  bool Initialize(scoped_refptr<RTCPeerConnectionFactory> factory,
+  bool Initialize(FlutterWebRTCBase* base,
                   const std::string& device_id = "");
   
   scoped_refptr<RTCMediaStream> CreateSysAudioMediaStream(
-      scoped_refptr<RTCPeerConnectionFactory> factory,
-      const std::string& stream_id = "");
+      FlutterWebRTCBase* base,
+      const std::string& stream_id, EncodableMap& params);
   
   scoped_refptr<RTCAudioTrack> CreateSysAudioTrack(
-      scoped_refptr<RTCPeerConnectionFactory> factory,
+      FlutterWebRTCBase* base,
       const std::string& track_id = "");
   
   bool StartCapture();

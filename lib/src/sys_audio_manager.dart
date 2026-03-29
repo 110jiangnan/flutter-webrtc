@@ -36,7 +36,7 @@ class SysAudioManager {
       }
       
       // 创建 MediaStream 对象（参考 getUserMedia 的实现）
-      final stream = MediaStreamNative(result['streamId'], result['ownerTag']);
+      final stream = MediaStreamNative(result['streamId'], result['ownerTag'] ?? 'local');
       stream.setMediaTracks(
         result['audioTracks'] ?? [],
         result['videoTracks'] ?? [],

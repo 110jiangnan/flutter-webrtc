@@ -1289,7 +1289,7 @@ void FlutterWebRTC::HandleMethodCall(
       initLoggerCallback(severity);
     }
   } else if (method_call.method_name().compare("GetSysAudioMedia") == 0) {
-    const EncodableMap params =GetValue<EncodableMap>(*method_call.arguments());
+    const EncodableMap params = GetValue<EncodableMap>(*method_call.arguments());
 
     std::string deviceId = findString(params, "deviceId");
     std::string streamId = findString(params, "streamId");
@@ -1299,7 +1299,7 @@ void FlutterWebRTC::HandleMethodCall(
     auto sys_audio_manager = SysAudioManager::GetInstance();
 
     if (!sys_audio_manager->IsInitialized()) {
-      if (!sys_audio_manager->Initialize(factory_, deviceId)) {
+      if (!sys_audio_manager->Initialize(this, deviceId)) {
         result->Error("GetSysAudioMedia",
                       "Failed to initialize system audio capture");
         return;
@@ -1315,9 +1315,9 @@ void FlutterWebRTC::HandleMethodCall(
     if (enablePcmRecording) {
       sys_audio_manager->EnablePcmRecording(enablePcmRecording, pcmFilePath);
     }
-      
-    auto stream = sys_audio_manager->CreateSysAudioMediaStream(factory_, streamId);
-      
+    EncodableMap result_data;
+
+    auto stream = sys_audio_manager->CreateSysAudioMediaStream(this, streamId, result_data);
     if (!stream) {
       result->Error("GetSysAudioMedia",
                     "Failed to create system audio stream");
@@ -1325,45 +1325,12 @@ void FlutterWebRTC::HandleMethodCall(
     }
     std::cout << "add sys audio stream local_streams_: " << stream->id().std_string() << std::endl;
     local_streams_[stream->id().std_string()] = stream;
-      
-    EncodableMap result_data;
-    result_data[EncodableValue("streamId")] =EncodableValue(stream->id().std_string());
-    result_data[EncodableValue("ownerTag")] = EncodableValue("local");
-      
-    EncodableList audioTracks;
-    auto audio_tracks = stream->audio_tracks();
-    for (scoped_refptr<RTCAudioTrack> track : audio_tracks.std_vector()) {
-      EncodableMap track_info;
-      track_info[EncodableValue("id")] = 
-          EncodableValue(track->id().std_string());
-      track_info[EncodableValue("label")] = 
-          EncodableValue(track->id().std_string());
-      track_info[EncodableValue("kind")] = 
-          EncodableValue(track->kind().std_string());
-      track_info[EncodableValue("enabled")] = 
-          EncodableValue(track->enabled());
-      
-      EncodableMap settings;
-      settings[EncodableValue("deviceId")] = EncodableValue(deviceId);
-      settings[EncodableValue("kind")] = EncodableValue("audioinput");
-      settings[EncodableValue("autoGainControl")] = EncodableValue(false);
-      settings[EncodableValue("echoCancellation")] = EncodableValue(false);
-      settings[EncodableValue("noiseSuppression")] = EncodableValue(false);
-      track_info[EncodableValue("settings")] = EncodableValue(settings);
-      
-      audioTracks.push_back(EncodableValue(track_info));
-    }
-    result_data[EncodableValue("audioTracks")] = EncodableValue(audioTracks);
-    
-    result_data[EncodableValue("videoTracks")] = EncodableValue(EncodableList());
-    
     result->Success(EncodableValue(result_data));
   } else if (method_call.method_name().compare("ReleaseSysAudioMedia") == 0) {
     const EncodableMap params = GetValue<EncodableMap>(*method_call.arguments());
     std::string streamId = findString(params, "streamId");
-    RemoveStreamForId(streamId);
+    MediaStreamDispose(streamId, std::move(result));
     SysAudioManager::DestroyInstance();
-    result->Success();
   } else if (method_call.method_name().compare("EnableSysAudioPcmRecording") == 0) {
     const EncodableMap params = GetValue<EncodableMap>(*method_call.arguments());
     bool enable = findBoolean(params, "enable");
