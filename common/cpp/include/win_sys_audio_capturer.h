@@ -42,6 +42,11 @@ class WinSysAudioCapturer {
   
   bool IsCapturing() const { return is_capturing_; }
 
+
+  int preferred_sample_rate_ = 48000;      // 48kHz sample rate
+  int preferred_bits_per_sample_ = 16;     // 16-bit depth
+  int preferred_channels_ = 2;             // Stereo (2 channels)
+
  private:
   void CaptureThread();
   
@@ -69,9 +74,6 @@ class WinSysAudioCapturer {
   UINT32 buffer_frame_count_ = 0;
   DWORD flags_ = 0;
 
-  int preferred_sample_rate_ = 48000;      // 48kHz sample rate
-  int preferred_bits_per_sample_ = 16;     // 16-bit depth
-  int preferred_channels_ = 2;             // Stereo (2 channels)
 };
 
 }  // namespace flutter_webrtc_plugin

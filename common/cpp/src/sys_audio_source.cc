@@ -6,7 +6,7 @@ namespace flutter_webrtc_plugin {
 SysAudioSource::SysAudioSource(
     scoped_refptr<RTCPeerConnectionFactory> factory,
     const std::string& audio_source_label)
-    : factory_(factory), audio_source_label_(audio_source_label) {
+    : factory_(factory), audio_source_label_(audio_source_label), audio_buffer(10240) {
   std::cout << "Creating SysAudioSource: " << audio_source_label;
   
   RTCAudioOptions options;

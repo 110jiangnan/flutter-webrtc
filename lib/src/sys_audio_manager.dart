@@ -90,4 +90,16 @@ class SysAudioManager {
       throw Exception('Failed to enable PCM recording: ${e.message}');
     }
   }
+
+  static Future<void> addAudioSink(String trackId) async {
+    try {
+      await WebRTC.invokeMethod(
+        'addAudioSink',
+        <String, dynamic>{'trackId': trackId},
+      );
+    } on PlatformException catch (e) {
+      throw Exception('Failed to release sys audio media: ${e.message}');
+    }
+  }
+
 }

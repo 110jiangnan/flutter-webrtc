@@ -331,7 +331,7 @@ WinSysAudioCapturer::GetRecordingDevices() {
   }
 
   IMMDeviceCollection* collection = nullptr;
-  hr = enumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection);
+  hr = enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
   
   if (FAILED(hr)) {
     std::cout << "Failed to enumerate devices";

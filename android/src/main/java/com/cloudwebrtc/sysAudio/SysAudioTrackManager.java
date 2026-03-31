@@ -57,6 +57,7 @@ public class SysAudioTrackManager {
     public String pcmPath;
     public boolean enablePcmRecord = false;
     FileOutputStream fos;
+    AudioBufferCache audioBufferCache;
 
     public static SysAudioTrackManager GetInstance(Context context, PeerConnectionFactory factory, MethodCallHandlerImpl methodCallHandler) {
         if (instance == null) {
@@ -217,6 +218,8 @@ public class SysAudioTrackManager {
                 cleanup();
                 return false;
             }
+            audioBufferCache = new AudioBufferCache(SystemAudioCapturer.SAMPLE_RATE,
+                    SystemAudioCapturer.CHANNEL_COUNT, SystemAudioCapturer.BITS_PER_SAMPLE);
             methodCallHandler.putLocalStream(stream.getId(), stream);
             methodCallHandler.putLocalTrack(localAudioTrack.id(), localAudioTrack);
             
@@ -265,21 +268,38 @@ public class SysAudioTrackManager {
         if (audioTracks.isEmpty()) {
             return;
         }
-        
-        // 构造 AudioSamples 对象
-        JavaAudioDeviceModule.AudioSamples audioSamples =
-            new JavaAudioDeviceModule.AudioSamples(SystemAudioCapturer.AUDIO_FORMAT, channels,
-                    sampleRate, pcmData);
-        
-        // 遍历所有 AudioTrack 并推送数据
+        byte[] testData = SystemAudioHelper.createData();
+        JavaAudioDeviceModule.AudioSamples audioSamples = new JavaAudioDeviceModule.AudioSamples(SystemAudioCapturer.AUDIO_FORMAT, channels,
+                        sampleRate, testData);
         for (LocalTrack track : audioTracks.values()) {
             if (track != null) {
-                // 调用 LocalAudioTrack 的回调方法
+//                Log.i("zjn", "pushDataToAllTracks：" + pcmData.length);
                 if (track instanceof LocalAudioTrack) {
                     ((LocalAudioTrack) track).onWebRtcAudioRecordSamplesReady(audioSamples);
                 }
             }
         }
+
+        /*audioBufferCache.addData(pcmData);
+        byte[] frame;
+        while ((frame = audioBufferCache.pollFrame()) != null) {
+            // 构造 AudioSamples 对象
+            JavaAudioDeviceModule.AudioSamples audioSamples =
+                    new JavaAudioDeviceModule.AudioSamples(SystemAudioCapturer.AUDIO_FORMAT, channels,
+                            sampleRate, frame);
+
+            // 遍历所有 AudioTrack 并推送数据
+            for (LocalTrack track : audioTracks.values()) {
+                if (track != null) {
+                    // 调用 LocalAudioTrack 的回调方法
+                    if (track instanceof LocalAudioTrack) {
+                        ((LocalAudioTrack) track).onWebRtcAudioRecordSamplesReady(audioSamples);
+                    }
+                }
+            }
+            audioBufferCache.queue.offer(frame);
+        }*/
+
         if (enablePcmRecord && pcmPath != null && fos != null) {
             try {
                 fos.write(pcmData);

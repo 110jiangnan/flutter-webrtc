@@ -142,7 +142,8 @@ class SysAudioSampleState extends State<SysAudioSample> {
           {'urls': 'stun:stun.l.google.com:19302'}
         ]
       });
-
+      setState(() {
+      });
       print('PeerConnection 创建成功');
     } catch (e) {
       print('创建 PeerConnection 失败：$e');
@@ -156,7 +157,6 @@ class SysAudioSampleState extends State<SysAudioSample> {
         for (var track in _sysAudioStream!.getAudioTracks()) {
           await _peerConnection!.addTrack(track, _sysAudioStream!);
         }
-
         print('系统音频已添加到 PeerConnection');
       }
     } catch (e) {

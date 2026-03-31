@@ -279,6 +279,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
           setState(() {
             _remoteRenderer.srcObject = event.streams[0];
           });
+        } else if (event.track.kind == 'audio') {
         }
       };
 
@@ -468,10 +469,10 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
       _cameraOn = true;
     });
 
-    _timer?.cancel();
-    _timer = Timer.periodic(Duration(seconds: 1), (timer) async {
-      //handleStatsReport(timer);
-    });
+    // _timer?.cancel();
+    // _timer = Timer.periodic(Duration(seconds: 1), (timer) async {
+    //   handleStatsReport(timer);
+    // });
   }
 
   void _stopVideo() async {
@@ -529,6 +530,10 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     setState(() {
       _micOn = true;
     });
+    _timer?.cancel();
+    _timer = Timer.periodic(Duration(seconds: 3), (timer) async {
+      handleStatsReport(timer);
+    });
   }
 
   MediaStream? _sysAudioStream;
@@ -576,6 +581,10 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     setState(() {
       _sysAudioOn = true;
     });
+    _timer?.cancel();
+    _timer = Timer.periodic(Duration(seconds: 3), (timer) async {
+      handleStatsReport(timer);
+    });
   }
 
   void _stopSysAudio() async {
@@ -596,6 +605,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     setState(() {
       _sysAudioOn = false;
     });
+    _timer?.cancel();
   }
 
   void _stopAudio() async {
@@ -611,6 +621,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     setState(() {
       _micOn = false;
     });
+    _timer?.cancel();
   }
 
   void _switchSpeaker() async {
@@ -623,9 +634,15 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
   }
 
   void handleStatsReport(Timer timer) async {
-    if (_remotePeerConnection != null && _remoteRenderer.srcObject != null) {
-      var reports = await _remotePeerConnection
-          ?.getStats(_remoteRenderer.srcObject!.getVideoTracks().first);
+    var tracks = <MediaStreamTrack>[];
+    _remotePeerConnection?.getRemoteStreams().forEach((element) {
+      var audioTracks = element?.getAudioTracks();
+      if (audioTracks != null) {
+        tracks.addAll(audioTracks);
+      }
+    });
+    if (_remotePeerConnection != null && tracks.isNotEmpty) {
+      var reports = await _remotePeerConnection?.getStats(tracks.first);
       reports?.forEach((report) {
         print('report => { ');
         print('    id: ' + report.id + ',');

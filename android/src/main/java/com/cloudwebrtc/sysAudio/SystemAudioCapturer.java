@@ -23,22 +23,21 @@ public class SystemAudioCapturer {
     private static final String TAG = "SystemAudioCapturer";
     
     // 音频参数
-    private static final int SAMPLE_RATE = 48000;  // 48kHz
-    private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_STEREO;  // 立体声
+    public static final int SAMPLE_RATE = 48000;  // 48kHz
+    public static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_STEREO;  // 立体声
     public static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;   // 16-bit
-    private static final int CHANNEL_COUNT = 2;
-    private static final int BITS_PER_SAMPLE = 16;  // 16-bit
-    private static final int BYTES_PER_FRAME = CHANNEL_COUNT * (BITS_PER_SAMPLE / 8);  // 16-bit = 2 bytes
+    public static final int CHANNEL_COUNT = 2;
+    public static final int BITS_PER_SAMPLE = 16;  // 16-bit
+    public static final int BYTES_PER_FRAME = CHANNEL_COUNT * (BITS_PER_SAMPLE / 8);  // 16-bit = 2 bytes
     
-    // 缓冲区大小（20ms 音频数据）
-    private static final int BUFFER_SIZE_IN_FRAMES = SAMPLE_RATE / 50;  // 480 frames @ 48kHz
+    // 缓冲区大小（10ms 音频数据）
+    private static final int BUFFER_SIZE_IN_FRAMES = SAMPLE_RATE / 100;  // 480 frames @ 48kHz
     private static final int BUFFER_SIZE_IN_BYTES = BUFFER_SIZE_IN_FRAMES * BYTES_PER_FRAME;
     
     private final Context context;
 
     // 使用 AudioRecord 直接录制系统音频
     private AudioRecord audioRecord;
-    private Thread captureThread;
     private volatile boolean isCapturing = false;
     private volatile boolean shouldStop = false;
     
