@@ -16,6 +16,9 @@ FlutterWebRTCBase::FlutterWebRTCBase(BinaryMessenger* messenger,
   LibWebRTC::Initialize();
   factory_ = LibWebRTC::CreateRTCPeerConnectionFactory();
   factory_->Initialize();
+  empty_adm_factory_ = factory_->copySharedField();
+  empty_adm_factory_->is_myaudio = true;
+  empty_adm_factory_->Initialize();
   audio_device_ = factory_->GetAudioDevice();
   video_device_ = factory_->GetVideoDevice();
   desktop_device_ = factory_->GetDesktopDevice();

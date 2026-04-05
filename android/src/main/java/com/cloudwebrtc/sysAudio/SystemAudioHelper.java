@@ -25,7 +25,7 @@ public class SystemAudioHelper {
 
         for (int i = 0; i < numberOfFrames; ++i) {
             // 计算正弦波值
-            double value = 0.5 * Math.sin(2.0 * Math.PI * frequency * i / sampleRate);
+            double value = 0.23 * Math.sin(2.0 * Math.PI * frequency * i / sampleRate);
 
             // 转换为 short (int16_t)
             short sampleVal = (short) (value * Short.MAX_VALUE);

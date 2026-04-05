@@ -47,6 +47,7 @@ import com.cloudwebrtc.webrtc.video.camera.Point;
 import com.cloudwebrtc.webrtc.video.LocalVideoTrack;
 import com.twilio.audioswitch.AudioDevice;
 
+import org.webrtc.audio.JavaEmptyAdm;
 import org.webrtc.AudioTrack;
 import org.webrtc.CryptoOptions;
 import org.webrtc.DtmfSender;
@@ -114,6 +115,8 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
   private final Context context;
   private final TextureRegistry textures;
   private PeerConnectionFactory mFactory;
+  private PeerConnectionFactory mEmptyAdmFactory;
+  private JavaEmptyAdm mJavaEmptyAdm;
   private final Map<String, MediaStream> localStreams = new HashMap<>();
   private final Map<String, LocalTrack> localTracks = new HashMap<>();
   private final LongSparseArray<FlutterRTCVideoRenderer> renders = new LongSparseArray<>();
@@ -285,7 +288,9 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     recordSamplesReadyCallbackAdapter.addCallback(new JavaAudioDeviceModule.SamplesReadyCallback() {
       @Override
       public void onWebRtcAudioRecordSamplesReady(JavaAudioDeviceModule.AudioSamples audioSamples) {
-        Log.i("zjn", "audioDeviceModule有音频数据: localTracks.size：" + localTracks.size());
+        Log.i("zjn", Thread.currentThread().getName() +
+                ":audioDeviceModule有音频数据: localTracks.size：" +
+                localTracks.size());
         for(LocalTrack track : localTracks.values()) {
           if (track instanceof LocalAudioTrack && Objects.equals(track.sType, "audio")) {
             ((LocalAudioTrack) track).onWebRtcAudioRecordSamplesReady(audioSamples);
@@ -305,7 +310,6 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
          audioDeviceModule.setNoiseSuppressorEnabled(true);
        }
     }
-
 
     getUserMediaImpl.audioDeviceModule = (JavaAudioDeviceModule) audioDeviceModule;
 
@@ -333,11 +337,17 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     audioProcessingController = new AudioProcessingController();
 
     factoryBuilder.setAudioProcessingFactory(audioProcessingController.externalAudioProcessingFactory);
+    mJavaEmptyAdm = new JavaEmptyAdm(context);
 
     mFactory = factoryBuilder
             .setAudioDeviceModule(audioDeviceModule)
             .createPeerConnectionFactory();
 
+    mEmptyAdmFactory = PeerConnectionFactory.builder().setOptions(options)
+            .setVideoEncoderFactory(videoEncoderFactory)
+            .setVideoDecoderFactory(videoDecoderFactory)
+            .setAudioDeviceModule(mJavaEmptyAdm)
+            .createPeerConnectionFactory();
   }
 
   @Override
@@ -1127,7 +1137,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
         constraintsMap.putString("streamId", (String) call.argument("streamId"));
         constraintsMap.putBoolean("enablePcmRecording", (Boolean) call.argument("enablePcmRecording"));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          SysAudioTrackManager sysAudioTrackManager = SysAudioTrackManager.GetInstance(context, mFactory, this);
+          SysAudioTrackManager sysAudioTrackManager = SysAudioTrackManager.GetInstance(context, mEmptyAdmFactory, this);
           sysAudioTrackManager.GetSysAudioMedia(constraintsMap, result);
         } else {
           resultError("GetSysAudioMedia", "not supported", result);
@@ -1138,7 +1148,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
         ConstraintsMap constraintsMap = new ConstraintsMap();
         constraintsMap.putString("streamId", (String) call.argument("streamId"));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          SysAudioTrackManager sysAudioTrackManager = SysAudioTrackManager.GetInstance(context, mFactory, this);
+          SysAudioTrackManager sysAudioTrackManager = SysAudioTrackManager.GetInstance(context, mEmptyAdmFactory, this);
 
           String streamId = constraintsMap.getString("streamId");
           streamDispose(streamId);
@@ -1487,8 +1497,13 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     String peerConnectionId = getNextStreamUUID();
     RTCConfiguration conf = parseRTCConfiguration(configuration);
     PeerConnectionObserver observer = new PeerConnectionObserver(conf, this, messenger, peerConnectionId);
+    boolean isSysAudio = configuration.getBool("isSysAudio");
+    PeerConnectionFactory fac = mFactory;
+    if (isSysAudio) {
+      fac = mEmptyAdmFactory;
+    }
     PeerConnection peerConnection
-            = mFactory.createPeerConnection(
+            = fac.createPeerConnection(
             conf,
             parseMediaConstraints(constraints),
             observer);

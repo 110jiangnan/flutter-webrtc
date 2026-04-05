@@ -44,8 +44,8 @@ SysAudioManager::~SysAudioManager() {
 bool SysAudioManager::Initialize(
     FlutterWebRTCBase* base,
     const std::string& device_id) {
-  if (!base->factory_) {
-    std::cout << "Invalid factory pointer" << std::endl;
+  if (!base->empty_adm_factory_) {
+    std::cout << "Invalid empty_adm_factory_ pointer" << std::endl;
     return false;
   }
   
@@ -53,7 +53,7 @@ bool SysAudioManager::Initialize(
     std::cout << "Already initialized" << std::endl;
     return true;
   }
-  audio_source_ = new RefCountedObject<SysAudioSource>(base->factory_, "sys_audio_capture");
+  audio_source_ = new RefCountedObject<SysAudioSource>(base->empty_adm_factory_, "sys_audio_capture");
 
   if (!audio_source_->rtc_audio_source()) {
     std::cout << "Failed to create sys audio source" << std::endl;
@@ -80,8 +80,8 @@ bool SysAudioManager::Initialize(
 scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
     FlutterWebRTCBase* base,
     const std::string& stream_id, EncodableMap& params) {
-  if (!base->factory_) {
-    std::cout << "Invalid factory pointer" << std::endl;
+  if (!base->empty_adm_factory_) {
+    std::cout << "Invalid empty_adm_factory_ pointer" << std::endl;
     return nullptr;
   }
   
@@ -97,7 +97,7 @@ scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
     return nullptr;
   }
   std::string actual_stream_id = stream_id.empty() ? base->GenerateUUID() : stream_id;
-  scoped_refptr<RTCMediaStream> stream = base->factory_->CreateStream(actual_stream_id.c_str());
+  scoped_refptr<RTCMediaStream> stream = base->empty_adm_factory_->CreateStream(actual_stream_id.c_str());
   
   if (!stream) {
     std::cout << "Failed to create media stream" << std::endl;
@@ -142,8 +142,8 @@ scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
 scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
     FlutterWebRTCBase* base,
     const std::string& track_id) {
-  if (!base->factory_) {
-    std::cout << "Invalid factory pointer";
+  if (!base->empty_adm_factory_) {
+    std::cout << "Invalid empty_adm_factory_ pointer";
     return nullptr;
   }
   
@@ -155,7 +155,7 @@ scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
 #if defined(_WIN32) || defined(WINDOWS)
   std::string actual_track_id = track_id.empty() ? base->GenerateUUID() : track_id;
   
-  auto audio_track = base->factory_->CreateAudioTrack(
+  auto audio_track = base->empty_adm_factory_->CreateAudioTrack(
       audio_source_->rtc_audio_source(), 
       actual_track_id.c_str());
   

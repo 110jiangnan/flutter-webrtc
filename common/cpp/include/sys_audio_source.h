@@ -125,8 +125,8 @@ class SysAudioSource : public RTCAudioSource {
         rtc_audio_source_->CaptureFrame(audio_buffer.GetPointer(), bits_per_sample, sample_rate,
                                         number_of_channels, target_frames);
         audio_buffer.Consume(target_bytes);
+//        createData();
       }
-//      createData();
     }  else {
       std::cout << "rtc_audio_source_ is null" << std::endl;
     }

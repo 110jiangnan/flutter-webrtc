@@ -44,6 +44,7 @@ public class SystemAudioCapturer {
     // 使用 ScheduledExecutorService 进行精确的 10ms 定时
     private ScheduledExecutorService captureScheduler;
     private ScheduledFuture<?> captureFuture;
+    private Thread captureThread;
     
     // 回调接口
     public interface CaptureCallback {
@@ -123,19 +124,25 @@ public class SystemAudioCapturer {
             shouldStop = false;
             
             // 使用定时器每 10ms 读取一次音频数据
-            captureScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            /*captureScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "SystemAudioCaptureTimer");
                 t.setPriority(Thread.MAX_PRIORITY);
                 return t;
             });
-            
             captureFuture = captureScheduler.scheduleWithFixedDelay(
                 this::readAudioData,
                 0,
                 10,
                 TimeUnit.MILLISECONDS
-            );
-            
+            );*/
+            // 启动专用音频捕获线程
+            captureThread = new Thread(() -> {
+                android.os.Process.setThreadPriority(
+                        android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
+                );
+                captureLoop();
+            }, "SystemAudioCaptureThread");
+            captureThread.start();
             Log.i(TAG, "Started periodic audio capture with 10ms interval");
             
             if (callback != null) {
@@ -155,6 +162,16 @@ public class SystemAudioCapturer {
                 callback.onError("Initialization failed: " + e.getMessage());
             }
             return false;
+        }
+    }
+    private void captureLoop() {
+        while (!shouldStop) {
+            readAudioData();
+//            try {
+//                Thread.sleep(7);
+//            } catch (InterruptedException e) {
+//                Log.e(TAG, "captureLoop Interrupted while awaiting EGL setup: " + e.getMessage());
+//            }
         }
     }
     
@@ -227,6 +244,15 @@ public class SystemAudioCapturer {
                 Thread.currentThread().interrupt();
             }
             captureScheduler = null;
+        }
+        // 中断 captureThread
+        if (captureThread != null) {
+            try {
+                captureThread.join(3000); // 等待最多n秒
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            captureThread = null;
         }
         
         // 停止 AudioRecord

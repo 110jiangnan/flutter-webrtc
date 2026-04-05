@@ -21,6 +21,7 @@ import com.cloudwebrtc.webrtc.audio.LocalAudioTrack;
 import com.cloudwebrtc.webrtc.utils.ConstraintsArray;
 import com.cloudwebrtc.webrtc.utils.ConstraintsMap;
 
+import org.webrtc.audio.JavaMyAudioSource;
 import org.webrtc.AudioSource;
 import org.webrtc.AudioTrack;
 import org.webrtc.MediaConstraints;
@@ -47,7 +48,7 @@ public class SysAudioTrackManager {
     
     // 核心组件
     private SystemAudioCapturer capturer;      // 音频捕获器
-    private AudioSource audioSource;           // 音频源（只有 1 个）
+    private JavaMyAudioSource audioSource;           // 音频源（只有 1 个）
     
     private final Map<String, LocalTrack> audioTracks = new ConcurrentHashMap<>();
 
@@ -154,7 +155,7 @@ public class SysAudioTrackManager {
             this.savedMediaProjectionIntent = mediaProjectionIntent;
             // 创建 AudioSource（只有 1 个）
             MediaConstraints constraints = new MediaConstraints();
-            audioSource = mFactory.createAudioSource(constraints);
+            audioSource = mFactory.createMyAudioSource(constraints);
 
             String trackId = methodCallHandler.getNextTrackUUID();
             AudioTrack track = mFactory.createAudioTrack(trackId, audioSource);
@@ -265,20 +266,13 @@ public class SysAudioTrackManager {
      * 参考 flutter-webrtc MethodCallHandlerImpl.java L252-L256
      */
     private void pushDataToAllTracks(byte[] pcmData, int sampleRate, int channels, int bitsPerSample) {
-        if (audioTracks.isEmpty()) {
+        if (audioSource == null) {
             return;
         }
+        // 假数据测试使用
         byte[] testData = SystemAudioHelper.createData();
-        JavaAudioDeviceModule.AudioSamples audioSamples = new JavaAudioDeviceModule.AudioSamples(SystemAudioCapturer.AUDIO_FORMAT, channels,
-                        sampleRate, testData);
-        for (LocalTrack track : audioTracks.values()) {
-            if (track != null) {
-//                Log.i("zjn", "pushDataToAllTracks：" + pcmData.length);
-                if (track instanceof LocalAudioTrack) {
-                    ((LocalAudioTrack) track).onWebRtcAudioRecordSamplesReady(audioSamples);
-                }
-            }
-        }
+        int number_of_frames = testData.length / (bitsPerSample / 8) / channels;
+        audioSource.OnData(testData, bitsPerSample, sampleRate, channels, number_of_frames);
 
         /*audioBufferCache.addData(pcmData);
         byte[] frame;
