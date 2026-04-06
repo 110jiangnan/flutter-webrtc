@@ -31,6 +31,7 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
                                            >
 
 @property(nonatomic, strong) RTCPeerConnectionFactory* _Nullable peerConnectionFactory;
+@property(nonatomic, strong) RTCPeerConnectionFactory* _Nullable emptyPcFactory;
 @property(nonatomic, strong)
     NSMutableDictionary<NSString*, RTCPeerConnection*>* _Nullable peerConnections;
 @property(nonatomic, strong)
