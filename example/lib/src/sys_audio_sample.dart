@@ -55,7 +55,7 @@ class SysAudioSampleState extends State<SysAudioSample> {
       } else if (Platform.isLinux) {
         pcmFilePath = '${tempDir.path}/pcm.pcm';
       } else if (Platform.isMacOS) {
-        pcmFilePath = '${tempDir.path}/pcm.pcm';
+        pcmFilePath = '/Users/macmima1234/Desktop/zjn/flutter-webrtc/example/test/pcm.pcm';
       }
       print('pcm 文件路径：$pcmFilePath');
       if (WebRTC.platformIsAndroid) {

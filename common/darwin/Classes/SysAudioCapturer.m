@@ -159,9 +159,23 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
                 dispatch_group_leave(setupGroup);
                 return;
             }
-            
+            NSLog(@"SysAudioCapturer: [DEBUG] Total Displays Found: %lu", (unsigned long)content.displays.count);
+            if (content.displays.count == 0) {
+              NSLog(@"SysAudioCapturer: No displays available. User may have denied permission in the picker.");
+              setupError = [NSError errorWithDomain:@"SysAudioCapturer"
+                                               code:3
+                                           userInfo:@{NSLocalizedDescriptionKey: @"content.displays.count == 0"}];
+              return;
+            }
+            // 遍历并打印每个显示器的信息
+//            for (int i = 0; i < content.displays.count; i++) {
+//              SCShareableContentDisplay *display = content.displays[i];
+//              NSLog(@"SysAudioCapturer: [DEBUG] Display %d - ID: %llu",
+//                    i,
+//                    (unsigned long long)display.displayID);
+//            }
             // 定义要捕获的内容范围 音频录制关键：只需指定一个显示器（displays.firstObject），无需指定窗口或应用
-            self.contentFilter = [SCContentFilter filterWithDisplay:content.displays.firstObject
+            self.contentFilter = [[SCContentFilter alloc] initWithDisplay:content.displays.firstObject
                                                   excludingApplications:@[]
                                                   exceptingWindows:@[]];
             
@@ -176,9 +190,11 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
             // 配置捕获流的行为
             SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
             streamConfig.capturesAudio = YES;
-            streamConfig.capturesMicrophone = NO;  // Only system audio, not microphone
-            streamConfig.sampleRate = (NSInteger)_sampleRate;
-            streamConfig.channelCount = (NSInteger)_channels;
+            if (@available(macOS 15.0, *)) {
+                streamConfig.captureMicrophone = NO;  // Only system audio, not microphone
+            }
+            streamConfig.sampleRate = (NSInteger)self->_sampleRate;
+            streamConfig.channelCount = (NSInteger)self->_channels;
             
             // 实际执行捕获的流对象
             self.audioStream = [[SCStream alloc] initWithFilter:self.contentFilter
@@ -196,7 +212,7 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
             // 注册音频数据回调（在指定队列中接收 CMSampleBuffer）
             [self.audioStream addStreamOutput:self
                               type:SCStreamOutputTypeAudio
-                              sampleHandlerQueue:_audioProcessingQueue
+                              sampleHandlerQueue:self->_audioProcessingQueue
                               error:&setupError];
             
             if (setupError) {
@@ -211,9 +227,9 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
                     setupError = startError;
                     NSLog(@"SysAudioCapturer: Failed to start capture: %@", startError.localizedDescription);
                 } else {
-                    _isCapturing = YES;
+                    self->_isCapturing = YES;
                     NSLog(@"SysAudioCapturer: Started capturing system audio (SampleRate: %ld, Channels: %ld, BitsPerSample: %ld)",
-                          (long)_sampleRate, (long)_channels, (long)_bitsPerSample);
+                          (long)self->_sampleRate, (long)self->_channels, (long)self->_bitsPerSample);
                     success = YES;
                 }
                 dispatch_group_leave(setupGroup);
@@ -227,10 +243,9 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
         if (setupError && error) {
             *error = setupError;
         }
-        
+        NSLog(@"SysAudioCapturer: end %hhd", success);
         return success;
     }
-    
     return NO;
 }
 
@@ -263,8 +278,11 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
 #pragma mark - SCStreamOutput Methods
 
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofOutputType:(SCStreamOutputType)outputType {
-    if (outputType != SCStreamOutputTypeAudio) {
-        return;
+    NSLog(@"SysAudioCapturer: didOutputSampleBuffer");
+    if (@available(macOS 13.0, *)) {
+        if (outputType != SCStreamOutputTypeAudio) {
+            return;
+        }
     }
     if (!_audioCallback) {
         return;

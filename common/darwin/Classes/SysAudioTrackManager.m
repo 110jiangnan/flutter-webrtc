@@ -1,6 +1,7 @@
 #import "SysAudioTrackManager.h"
 #import <AVFoundation/AVFoundation.h>
 #import "RTCAudioSource+Private.h"
+#import "FlutterWebRTCPlugin.h"
 #include "WebRTC/RTCPeerConnectionFactory.h"
 #include "WebRTC/RTCAudioSource.h"
 #include "LocalAudioTrack.h"
@@ -113,7 +114,7 @@
                        sampleRate:sampleRate
                 numberOfChannels:numberOfChannels
                   numberOfFrames:numberOfFrames];
-    } userData:nil];
+    } userData:(__bridge void *)self];
     
     // Start capture
     NSError *captureError = nil;
@@ -153,7 +154,7 @@
     [self.audioCapturer stopCapture];
 }
 
-- (nullable RTCAudioTrack *)createSystemAudioTrack:(FlutterWebRTCPlugin *)plugin (nullable NSString *)trackId {
+- (nullable RTCAudioTrack *)createSystemAudioTrack:(FlutterWebRTCPlugin *)plugin trackId:(nullable NSString *)trackId {
     if (!_isInitialized) {
         NSLog(@"SysAudioTrackManager: Not initialized");
         return nil;
@@ -204,7 +205,7 @@
         return nil;
     }
     // Create audio track
-    RTCAudioTrack *audioTrack = [self createSystemAudioTrack:nil];
+    RTCAudioTrack *audioTrack = [self createSystemAudioTrack:plugin trackId:nil];
     if (!audioTrack) {
         NSLog(@"SysAudioTrackManager: Failed to create audio track for stream");
         return nil;
@@ -268,6 +269,9 @@
     @synchronized (self) {
         // Reset state
         self.audioCapturer = nil;
+        self.audioTracks = [NSMutableDictionary dictionary];
+        _trackOrder = [NSMutableArray array];
+        _audioSource = nil;
 
         _isInitialized = NO;
         _enablePcmRecording = NO;
@@ -285,10 +289,19 @@
     if (!_isInitialized) {
         return;
     }
-    @synchronized (self) {
-        // audiosource发送数据
-        audioSource.onAudioData(audioData, bitsPerSample, sampleRate, numberOfChannels, numberOfFrames);
-    }
+    NSLog(@"processAudioData %d %d %d %d", bitsPerSample, sampleRate, numberOfChannels, numberOfFrames);
+//    int audioDataSize = (int)(numberOfFrames * (bitsPerSample / 8) * numberOfChannels);
+//    NSData *audioDataObj = [NSData dataWithBytesNoCopy:(void *)audioData
+//                                                length:audioDataSize
+//                                          freeWhenDone:NO];
+//    @synchronized (self) {
+//        // audiosource发送数据
+//        [_audioSource onAudioData:audioDataObj
+//                    bitsPerSample:bitsPerSample
+//                       sampleRate:sampleRate
+//                 numberOfChannels:(int)numberOfChannels numberOfFrames:(int)numberOfFrames];
+//    }
+    [self testGeneratePcmData];
     // Write to PCM file if recording is enabled
     if (_enablePcmRecording && _pcmFilePath.length > 0) {
         [self writePcmData:audioData 
@@ -298,6 +311,8 @@
     }
 }
 
+// --------------------------用于测试方法--------------------
+
 - (void)writePcmData:(const void *)audioData
       numberOfFrames:(size_t)numberOfFrames
     numberOfChannels:(size_t)numberOfChannels
@@ -305,7 +320,6 @@
     // Calculate data size
     size_t bytesPerFrame = numberOfChannels * (bitsPerSample / 8);
     size_t dataSize = numberOfFrames * bytesPerFrame;
-    
     // Append to file
     NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:_pcmFilePath];
     if (!fileHandle) {
@@ -316,6 +330,59 @@
     [fileHandle seekToEndOfFile];
     [fileHandle writeData:[NSData dataWithBytes:audioData length:dataSize]];
     [fileHandle closeFile];
+}
+
+- (NSData *)testGeneratePcmData {
+    // 1. 定义参数
+    const int sample_rate = 48000;
+    const int channels = 2;
+    const int bits_per_sample = 16;
+    const int duration_ms = 10; // 10毫秒
+
+    // 2. 计算缓冲区大小
+    int number_of_frames = (sample_rate * duration_ms) / 1000;
+    // 字节数 = 帧数 * 通道数 * 每采样字节数
+    size_t buffer_size = number_of_frames * channels * (bits_per_sample / 8);
+
+    // 3. 分配内存 (使用 malloc 以便稍后由 NSData 接管释放)
+    void *audio_buffer = malloc(buffer_size);
+    if (!audio_buffer) {
+        NSLog(@"内存分配失败");
+        return nil;
+    }
+
+    // 4. 生成音频数据 (正弦波)
+    // 将缓冲区视为 int16_t 数组 (因为 bits_per_sample 是 16)
+    int16_t *samples = (int16_t *)audio_buffer;
+    double frequency = 440.0; // A4 音符
+    double two_pi = 2.0 * M_PI; // 使用 math.h 中的 M_PI 或手动定义
+
+    for (int i = 0; i < number_of_frames; ++i) {
+        // 计算正弦波值 [-1.0, 1.0]
+        double value = 0.23 * sin(two_pi * frequency * i / sample_rate);
+
+        // 转换为 16-bit 整数 [-32768, 32767]
+        // 0.5 * 32767 = 16383.5，这里强制转换会截断小数部分
+        int16_t sample_val = (int16_t)(value * 32767.0);
+
+        // 写入左声道 (索引 i*2) 和 右声道 (索引 i*2+1)
+        samples[i * 2]     = sample_val; // 左
+        samples[i * 2 + 1] = sample_val; // 右
+    }
+
+    // 调试打印
+//    NSLog(@"生成 PCM: %dHz, %d通道, %d位, %d帧, 大小: %zu字节",
+//        sample_rate, channels, bits_per_sample, number_of_frames, buffer_size);
+    // 5. 封装为 NSData
+    // freeWhenDone: YES 表示当 NSData 对象被释放时，自动调用 free() 释放 audio_buffer
+    NSData *pcmData = [NSData dataWithBytesNoCopy:audio_buffer
+                                         length:buffer_size
+                                   freeWhenDone:YES];
+    [_audioSource onAudioData:pcmData
+                    bitsPerSample:bits_per_sample
+                       sampleRate:sample_rate
+                 numberOfChannels:(int)channels numberOfFrames:(int)number_of_frames];
+    return pcmData;
 }
 
 @end

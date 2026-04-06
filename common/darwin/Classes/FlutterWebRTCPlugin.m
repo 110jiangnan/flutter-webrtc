@@ -327,6 +327,12 @@ static FlutterWebRTCPlugin *sharedSingleton;
 
         _emptyPcFactory = [_peerConnectionFactory copySharedField];
         [_emptyPcFactory setEmptyAdm];
+        [_emptyPcFactory initWithAudioDeviceModuleType:RTCAudioDeviceModuleTypeAudioEngine
+                                 bypassVoiceProcessing:YES
+                                        encoderFactory:simulcastFactory
+                                        decoderFactory:decoderFactory
+                                 audioProcessingModule:_audioManager.audioProcessingModule];
+        [_emptyPcFactory setOptions: options];
     }
 }
 
