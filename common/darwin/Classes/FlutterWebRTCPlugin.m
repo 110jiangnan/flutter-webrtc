@@ -361,8 +361,13 @@ static FlutterWebRTCPlugin *sharedSingleton;
     NSDictionary* argsMap = call.arguments;
     NSDictionary* configuration = argsMap[@"configuration"];
     NSDictionary* constraints = argsMap[@"constraints"];
+    BOOL isSysAudio = [argsMap[@"isSysAudio"] boolValue];
+    if (![argsMap[@"isSysAudio"] isKindOfClass:[NSNumber class]]) {
+        isSysAudio = NO;
+    }
 
-    RTCPeerConnection* peerConnection = [self.peerConnectionFactory
+    RTCPeerConnectionFactory *factory = isSysAudio ? self.emptyPcFactory : self.peerConnectionFactory;
+    RTCPeerConnection* peerConnection = [factory
         peerConnectionWithConfiguration:[self RTCConfiguration:configuration]
                             constraints:[self parseMediaConstraints:constraints]
                                delegate:self];

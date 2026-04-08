@@ -105,9 +105,9 @@
     __weak typeof(self) weakSelf = self;
     [self.audioCapturer setAudioDataCallback:^(const void *audioData,
                                                int bitsPerSample,
-                                               int sampleRate,
-                                               size_t numberOfChannels,
-                                               size_t numberOfFrames,
+                               int sampleRate,
+                               int numberOfChannels,
+                               int numberOfFrames,
                                                void *userData) {
         [weakSelf processAudioData:audioData
                    bitsPerSample:bitsPerSample
@@ -116,15 +116,15 @@
                   numberOfFrames:numberOfFrames];
     } userData:(__bridge void *)self];
     
-    // Start capture
+    // Start capture with empty callback (test mode)
     NSError *captureError = nil;
-    if (![self.audioCapturer startCapture:&captureError]) {
-        if (error) {
-            *error = captureError;
+    [self.audioCapturer startCapture:&captureError completion:^(BOOL success, NSError *completionError) {
+        // Empty callback for test mode
+        NSLog(@"SysAudioCapturer: Capture started with success: %hhd", success);
+        if (!success) {
+            NSLog(@"SysAudioCapturer: Capture failed: %@", completionError.localizedDescription);
         }
-        NSLog(@"SysAudioTrackManager: Failed to start capture: %@", captureError.localizedDescription);
-        return NO;
-    }
+    }];
     
     _isInitialized = YES;
     NSLog(@"SysAudioTrackManager: Initialized successfully with device: %@", 
@@ -141,11 +141,16 @@
     
     if (self.audioCapturer && !self.audioCapturer.isCapturing) {
         NSError *error = nil;
-        BOOL result = [self.audioCapturer startCapture:&error];
-        if (!result) {
-            NSLog(@"SysAudioTrackManager: Failed to start capture: %@", error.localizedDescription);
-        }
-        return result;
+        // Start capture with empty callback (test mode)
+        [self.audioCapturer startCapture:&error completion:^(BOOL success, NSError *completionError) {
+            // Empty callback for test mode
+            NSLog(@"SysAudioCapturer: Capture started with success: %hhd", success);
+            if (!success) {
+                NSLog(@"SysAudioCapturer: Capture failed: %@", completionError.localizedDescription);
+            }
+        }];
+        // Return YES immediately for test mode
+        return YES;
     }
     return self.audioCapturer.isCapturing;
 }
@@ -284,24 +289,24 @@
 - (void)processAudioData:(const void *)audioData
            bitsPerSample:(int)bitsPerSample
               sampleRate:(int)sampleRate
-        numberOfChannels:(size_t)numberOfChannels
-          numberOfFrames:(size_t)numberOfFrames {
+        numberOfChannels:(int)numberOfChannels
+          numberOfFrames:(int)numberOfFrames {
     if (!_isInitialized) {
         return;
     }
     NSLog(@"processAudioData %d %d %d %d", bitsPerSample, sampleRate, numberOfChannels, numberOfFrames);
-//    int audioDataSize = (int)(numberOfFrames * (bitsPerSample / 8) * numberOfChannels);
-//    NSData *audioDataObj = [NSData dataWithBytesNoCopy:(void *)audioData
-//                                                length:audioDataSize
-//                                          freeWhenDone:NO];
-//    @synchronized (self) {
-//        // audiosource发送数据
-//        [_audioSource onAudioData:audioDataObj
-//                    bitsPerSample:bitsPerSample
-//                       sampleRate:sampleRate
-//                 numberOfChannels:(int)numberOfChannels numberOfFrames:(int)numberOfFrames];
-//    }
-    [self testGeneratePcmData];
+    int audioDataSize = (int)(numberOfFrames * (bitsPerSample / 8) * numberOfChannels);
+    NSData *audioDataObj = [NSData dataWithBytesNoCopy:(void *)audioData
+                                                length:audioDataSize
+                                          freeWhenDone:NO];
+    @synchronized (self) {
+        // audiosource发送数据
+        [_audioSource onAudioData:audioDataObj
+                    bitsPerSample:bitsPerSample
+                       sampleRate:sampleRate
+                 numberOfChannels:numberOfChannels numberOfFrames:numberOfFrames];
+    }
+//    [self testGeneratePcmData];
     // Write to PCM file if recording is enabled
     if (_enablePcmRecording && _pcmFilePath.length > 0) {
         [self writePcmData:audioData 
@@ -314,8 +319,8 @@
 // --------------------------用于测试方法--------------------
 
 - (void)writePcmData:(const void *)audioData
-      numberOfFrames:(size_t)numberOfFrames
-    numberOfChannels:(size_t)numberOfChannels
+      numberOfFrames:(int)numberOfFrames
+    numberOfChannels:(int)numberOfChannels
        bitsPerSample:(int)bitsPerSample {
     // Calculate data size
     size_t bytesPerFrame = numberOfChannels * (bitsPerSample / 8);
@@ -336,7 +341,7 @@
     // 1. 定义参数
     const int sample_rate = 48000;
     const int channels = 2;
-    const int bits_per_sample = 16;
+    const int bits_per_sample = 32;
     const int duration_ms = 10; // 10毫秒
 
     // 2. 计算缓冲区大小
@@ -353,17 +358,17 @@
 
     // 4. 生成音频数据 (正弦波)
     // 将缓冲区视为 int16_t 数组 (因为 bits_per_sample 是 16)
-    int16_t *samples = (int16_t *)audio_buffer;
+    float *samples = (float *)audio_buffer;
     double frequency = 440.0; // A4 音符
     double two_pi = 2.0 * M_PI; // 使用 math.h 中的 M_PI 或手动定义
 
     for (int i = 0; i < number_of_frames; ++i) {
         // 计算正弦波值 [-1.0, 1.0]
-        double value = 0.23 * sin(two_pi * frequency * i / sample_rate);
+        float value = 0.3 * sin(two_pi * frequency * i / sample_rate);
 
         // 转换为 16-bit 整数 [-32768, 32767]
         // 0.5 * 32767 = 16383.5，这里强制转换会截断小数部分
-        int16_t sample_val = (int16_t)(value * 32767.0);
+        float sample_val = value;
 
         // 写入左声道 (索引 i*2) 和 右声道 (索引 i*2+1)
         samples[i * 2]     = sample_val; // 左
