@@ -51,11 +51,11 @@ class SysAudioSampleState extends State<SysAudioSample> {
       final tempDir = await getTemporaryDirectory();
       var pcmFilePath = 'E:/pcm.pcm';
       if (Platform.isAndroid) {
-        pcmFilePath = '${tempDir.path}/pcm11.pcm';
+        pcmFilePath = '${tempDir.path}/pcm_android.pcm';
       } else if (Platform.isLinux) {
-        pcmFilePath = '${tempDir.path}/pcm.pcm';
+        pcmFilePath = '/home/zjn/app/pcm_linux.pcm';
       } else if (Platform.isMacOS) {
-        pcmFilePath = '/Users/macmima1234/Desktop/zjn/flutter-webrtc/example/test/pcm.pcm';
+        pcmFilePath = '/Users/macmima1234/Desktop/zjn/flutter-webrtc/example/test/pcm_mac.pcm';
       }
       print('pcm 文件路径：$pcmFilePath');
       if (WebRTC.platformIsAndroid) {

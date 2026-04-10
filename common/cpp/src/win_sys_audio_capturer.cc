@@ -393,6 +393,12 @@ void WinSysAudioCapturer::CleanupCOM() {
   CoUninitialize();
 }
 
+// 静态方法：检查是否支持系统音频捕获
+// Windows Vista 及以上版本都支持 WASAPI，默认认为支持
+bool WinSysAudioCapturer::IsSystemAudioCaptureSupported() {
+  return true;
+}
+
 }  // namespace flutter_webrtc_plugin
 
 //#endif  // _WIN32

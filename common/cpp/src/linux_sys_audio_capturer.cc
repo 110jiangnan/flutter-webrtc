@@ -1,21 +1,18 @@
 // Linux 系统音频捕获器实现
-// 使用 PulseAudio 录制系统音频（需要 libpulse-simple）
-// 注意：仅录制 Monitor 源（系统音频输出），不录制麦克风
+// 使用 PulseAudio 录制系统音频(需要 libpulse-simple)
+// 注意:仅录制 Monitor 源(系统音频输出),不录制麦克风
 
-//#if defined(__linux__) || defined(LINUX)
+// #if defined(__linux__) || defined(LINUX)
 
 #include "linux_sys_audio_capturer.h"
+#include <iostream>
 
-// 尝试包含 PulseAudio，如果不可用则使用占位实现
-#ifdef HAVE_PULSEAUDIO
 #include <pulse/pulseaudio.h>
 #include <pulse/glib-mainloop.h>
 #include <cstring>
-#endif
 
 namespace flutter_webrtc_plugin {
 
-#ifdef HAVE_PULSEAUDIO
 // 全局变量用于存储 Sink 列表查询结果
 struct SinkInfoData {
   std::vector<std::pair<std::string, std::string>>* devices;
@@ -52,43 +49,30 @@ void sink_info_callback(pa_context* context,
   SinkInfoData* data = static_cast<SinkInfoData*>(userdata);
   data->devices->push_back({monitor_name, description});
 }
-#endif
 
 LinuxSysAudioCapturer::LinuxSysAudioCapturer() {
-#ifdef HAVE_PULSEAUDIO
-  RTC_LOG(LS_INFO) << "LinuxSysAudioCapturer created (PulseAudio mode)";
-#else
-  RTC_LOG(LS_INFO) << "LinuxSysAudioCapturer created (stub mode - PulseAudio not available)";
-#endif
+
 }
 
 LinuxSysAudioCapturer::~LinuxSysAudioCapturer() {
   StopCapture();
   Release();
-  RTC_LOG(LS_INFO) << "LinuxSysAudioCapturer destroyed";
+  std::cout << "INFO: LinuxSysAudioCapturer destroyed" << std::endl;
 }
 
 bool LinuxSysAudioCapturer::Initialize(const std::string& device_id) {
-#ifdef HAVE_PULSEAUDIO
   return InitializePulseAudio(device_id);
-#else
-  // 占位模式：返回失败但不崩溃
-  RTC_LOG(LS_WARNING) 
-      << "LinuxSysAudioCapturer::Initialize() - PulseAudio not available, returning false";
-  return false;
-#endif
 }
 
 bool LinuxSysAudioCapturer::StartCapture() {
-#ifdef HAVE_PULSEAUDIO
   if (!pulse_stream_) {
-    RTC_LOG(LS_ERROR) << "Cannot start capture - PulseAudio not initialized";
+    std::cerr << "ERROR: Cannot start capture - PulseAudio not initialized" << std::endl;
     return false;
   }
   
   if (is_capturing_) {
-    RTC_LOG(LS_WARNING) << "Already capturing";
-    return false;
+    std::cerr << "WARNING: Already capturing" << std::endl;
+    return true;
   }
 
   should_stop_ = false;
@@ -97,14 +81,8 @@ bool LinuxSysAudioCapturer::StartCapture() {
   // 启动捕获线程
   capture_thread_ = std::thread(&LinuxSysAudioCapturer::CaptureThread, this);
   
-  RTC_LOG(LS_INFO) << "Started PulseAudio capture";
+  std::cout << "INFO: Started PulseAudio capture" << std::endl;
   return true;
-#else
-  // 占位模式：返回失败但不崩溃
-  RTC_LOG(LS_WARNING) 
-      << "LinuxSysAudioCapturer::StartCapture() - PulseAudio not available, returning false";
-  return false;
-#endif
 }
 
 void LinuxSysAudioCapturer::StopCapture() {
@@ -120,32 +98,28 @@ void LinuxSysAudioCapturer::StopCapture() {
     capture_thread_.join();
   }
 
-  RTC_LOG(LS_INFO) << "Stopped audio capture";
+  std::cout << "INFO: Stopped audio capture" << std::endl;
 }
 
 void LinuxSysAudioCapturer::Release() {
-#ifdef HAVE_PULSEAUDIO
   CleanupPulseAudio();
-#endif
-  RTC_LOG(LS_VERBOSE) << "LinuxSysAudioCapturer::Release()";
 }
 
 void LinuxSysAudioCapturer::SetCallback(AudioDataCallback callback, void* user_data) {
   std::lock_guard<std::mutex> lock(mutex_);
   callback_ = callback;
   user_data_ = user_data;
-  RTC_LOG(LS_VERBOSE) << "LinuxSysAudioCapturer::SetCallback()";
+  std::cout << "VERBOSE: LinuxSysAudioCapturer::SetCallback()" << std::endl;
 }
 
 std::vector<std::pair<std::string, std::string>> 
 LinuxSysAudioCapturer::GetRecordingDevices() {
-#ifdef HAVE_PULSEAUDIO
   std::vector<std::pair<std::string, std::string>> devices;
   
   // 创建主循环和上下文
   pa_mainloop* mainloop = pa_mainloop_new();
   if (!mainloop) {
-    RTC_LOG(LS_ERROR) << "Failed to create PulseAudio mainloop";
+    std::cerr << "ERROR: Failed to create PulseAudio mainloop" << std::endl;
     return devices;
   }
   
@@ -166,7 +140,7 @@ LinuxSysAudioCapturer::GetRecordingDevices() {
   pa_context_state_t state;
   while ((state = pa_context_get_state(context)) != PA_CONTEXT_READY) {
     if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
-      RTC_LOG(LS_ERROR) << "PulseAudio context failed to connect";
+      std::cerr << "ERROR: PulseAudio context failed to connect" << std::endl;
       pa_context_unref(context);
       pa_mainloop_free(mainloop);
       return devices;
@@ -183,7 +157,7 @@ LinuxSysAudioCapturer::GetRecordingDevices() {
   // 异步查询所有 Sink 信息（输出设备）
   pa_operation* op = pa_context_get_sink_info_list(context, sink_info_callback, &data);
   if (!op) {
-    RTC_LOG(LS_ERROR) << "Failed to get sink info list";
+    std::cerr << "ERROR: Failed to get sink info list" << std::endl;
     pa_context_disconnect(context);
     pa_context_unref(context);
     pa_mainloop_free(mainloop);
@@ -199,7 +173,7 @@ LinuxSysAudioCapturer::GetRecordingDevices() {
   
   // 如果没有找到任何 Monitor 源，添加一个默认的
   if (devices.empty()) {
-    RTC_LOG(LS_WARNING) << "No monitor sources found, adding default";
+    std::cerr << "WARNING: No monitor sources found, adding default" << std::endl;
     devices.push_back({"default", "Default Audio Device"});
   }
   
@@ -208,21 +182,14 @@ LinuxSysAudioCapturer::GetRecordingDevices() {
   pa_context_unref(context);
   pa_mainloop_free(mainloop);
   
-  RTC_LOG(LS_INFO) << "Found " << devices.size() << " monitor sources";
+  std::cout << "INFO: Found " << devices.size() << " monitor sources" << std::endl;
   for (const auto& device : devices) {
-    RTC_LOG(LS_INFO) << "  - " << device.second << " (" << device.first << ")";
+    std::cout << "INFO:   - " << device.second << " (" << device.first << ")" << std::endl;
   }
   
   return devices;
-#else
-  // 占位模式：返回空列表
-  RTC_LOG(LS_INFO) 
-      << "LinuxSysAudioCapturer::GetRecordingDevices() - Returning empty list (PulseAudio not available)";
-  return std::vector<std::pair<std::string, std::string>>();
-#endif
 }
 
-#ifdef HAVE_PULSEAUDIO
 bool LinuxSysAudioCapturer::InitializePulseAudio(const std::string& device_id) {
   // 设置音频格式
   sample_spec_.format = PA_SAMPLE_S16LE;  // 16-bit little-endian
@@ -244,16 +211,15 @@ bool LinuxSysAudioCapturer::InitializePulseAudio(const std::string& device_id) {
   );
 
   if (!pulse_stream_) {
-    RTC_LOG(LS_ERROR) << "Failed to create PulseAudio stream: " 
-                      << pa_strerror(error);
+    std::cerr << "ERROR: Failed to create PulseAudio stream: " 
+              << pa_strerror(error) << std::endl;
     return false;
   }
 
-  RTC_LOG(LS_INFO) << "PulseAudio initialized successfully";
-  RTC_LOG(LS_INFO) << "Sample rate: " << sample_spec_.rate 
-                   << ", Channels: " << sample_spec_.channels
-                   << ", Format: S16LE";
-  
+  std::cout << "INFO: PulseAudio initialized successfully" << std::endl;
+  std::cout << "INFO: Sample rate: " << sample_spec_.rate 
+            << ", Channels: " << (uint32_t) sample_spec_.channels
+            << ", Format: S16LE" << std::endl;
   return true;
 }
 
@@ -261,12 +227,12 @@ void LinuxSysAudioCapturer::CleanupPulseAudio() {
   if (pulse_stream_) {
     pa_simple_free(pulse_stream_);
     pulse_stream_ = nullptr;
-    RTC_LOG(LS_INFO) << "PulseAudio stream cleaned up";
+    std::cout << "INFO: PulseAudio stream cleaned up" << std::endl;
   }
 }
 
 void LinuxSysAudioCapturer::CaptureThread() {
-  RTC_LOG(LS_INFO) << "PulseAudio capture thread started";
+  std::cout << "INFO: PulseAudio capture thread started" << std::endl;
   
   // 缓冲区大小（根据采样率和帧数计算）
   const size_t frames_per_buffer = 480;  // 10ms @ 48kHz
@@ -280,8 +246,8 @@ void LinuxSysAudioCapturer::CaptureThread() {
     
     // 从 PulseAudio 读取数据
     if (pa_simple_read(pulse_stream_, buffer.data(), buffer_size, &error) < 0) {
-      RTC_LOG(LS_ERROR) << "Failed to read from PulseAudio: " 
-                        << pa_strerror(error);
+      std::cerr << "ERROR: Failed to read from PulseAudio: " 
+                << pa_strerror(error) << std::endl;
       break;
     }
     
@@ -299,9 +265,13 @@ void LinuxSysAudioCapturer::CaptureThread() {
     }
   }
   
-  RTC_LOG(LS_INFO) << "PulseAudio capture thread stopped";
+  std::cout << "INFO: PulseAudio capture thread stopped" << std::endl;
 }
-#endif  // HAVE_PULSEAUDIO
+
+// 静态方法：检查是否支持系统音频捕获
+bool LinuxSysAudioCapturer::IsSystemAudioCaptureSupported() {
+  return true;
+}
 
 }  // namespace flutter_webrtc_plugin
 

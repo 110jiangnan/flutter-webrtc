@@ -22,63 +22,59 @@ SysAudioSource::SysAudioSource(
   
   if (rtc_audio_source_) {
     capturer_ = std::make_unique<PlatformSysAudioCapturer>();
-    
     capturer_->SetCallback(&SysAudioSource::OnAudioDataCallback, this);
-    
-    std::cout << "SysAudioSource created successfully";
+    std::cout << "SysAudioSource created successfully" << std::endl;
   } else {
-    std::cout << "Failed to create RTCAudioSource";
+    std::cout << "Failed to create RTCAudioSource" << std::endl;
   }
 }
 
 SysAudioSource::~SysAudioSource() {
-  std::cout << "Destroying SysAudioSource";
+  std::cout << "Destroying SysAudioSource" << std::endl;
   StopCapture();
   rtc_audio_source_ = nullptr;
 }
 
 bool SysAudioSource::Initialize(const std::string& device_id) {
   if (!capturer_) {
-    std::cout << "Capturer not initialized";
+    std::cout << "Capturer not initialized" << std::endl;
     return false;
   }
   
   bool result = capturer_->Initialize(device_id);
   if (result) {
     std::cout << "SysAudioSource initialized with device: " 
-                     << (device_id.empty() ? "default" : device_id);
+                     << (device_id.empty() ? "default" : device_id) << std::endl;
   } else {
-    std::cout << "Failed to initialize SysAudioSource (platform may not support it)";
+    std::cout << "Failed to initialize SysAudioSource (platform may not support it)" << std::endl;
   }
-  
   return result;
 }
 
 bool SysAudioSource::StartCapture() {
   if (!capturer_) {
-    std::cout << "Cannot start capture - capturer is null";
+    std::cout << "Cannot start capture - capturer is null" << std::endl;
     return false;
   }
   
   if (capturer_->IsCapturing()) {
-    std::cout << "Already capturing";
+    std::cout << "Already capturing" << std::endl;
     return true;
   }
   
   bool result = capturer_->StartCapture();
   if (result) {
-    std::cout << "Started sys audio capture";
+    std::cout << "Started sys audio capture" << std::endl;
   } else {
-    std::cout << "Failed to start sys audio capture (platform may not support it)";
+    std::cout << "Failed to start sys audio capture (platform may not support it)" << std::endl;
   }
-  
   return result;
 }
 
 void SysAudioSource::StopCapture() {
   if (capturer_ && capturer_->IsCapturing()) {
     capturer_->StopCapture();
-    std::cout << "Stopped sys audio capture";
+    std::cout << "Stopped sys audio capture" << std::endl;
   }
 }
 

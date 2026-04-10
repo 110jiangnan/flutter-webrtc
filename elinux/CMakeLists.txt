@@ -28,6 +28,9 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_webrtc.cc"
   "../common/cpp/src/flutter_webrtc_base.cc"
   "../common/cpp/src/flutter_common.cc"
+  "../common/cpp/src/sys_audio_source.cc"
+  "../common/cpp/src/sys_audio_manager.cc"
+  "../common/cpp/src/linux_sys_audio_capturer.cc"
   "flutter_webrtc_plugin.cc"
 )
 

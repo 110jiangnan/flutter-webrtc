@@ -15,6 +15,11 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_definitions(-DRTC_DESKTOP_DEVICE)
 
+# 查找并配置 PulseAudio
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PULSEAUDIO REQUIRED libpulse-simple libpulse)
+message(STATUS "PulseAudio found: ${PULSEAUDIO_INCLUDE_DIRS}")
+
 add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_data_channel.cc"
   "../common/cpp/src/flutter_frame_cryptor.cc"
@@ -26,6 +31,9 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_webrtc.cc"
   "../common/cpp/src/flutter_webrtc_base.cc"
   "../common/cpp/src/flutter_common.cc"
+  "../common/cpp/src/sys_audio_source.cc"
+  "../common/cpp/src/sys_audio_manager.cc"
+  "../common/cpp/src/linux_sys_audio_capturer.cc"
   "flutter_webrtc_plugin.cc"
   "flutter/core_implementations.cc"
   "flutter/standard_codec.cc"
@@ -39,20 +47,24 @@ include_directories(
   "${CMAKE_CURRENT_SOURCE_DIR}/../common/cpp/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/svpng"
+  ${PULSEAUDIO_INCLUDE_DIRS}
 )
 
 apply_standard_settings(${PLUGIN_NAME})
 set_target_properties(${PLUGIN_NAME} PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
-target_include_directories(${PLUGIN_NAME} INTERFACE
+target_include_directories(${PLUGIN_NAME} PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/../common/cpp/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/include"
+  ${PULSEAUDIO_INCLUDE_DIRS}
 )
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
+# 链接 PulseAudio 库
+target_link_libraries(${PLUGIN_NAME} PRIVATE ${PULSEAUDIO_LDFLAGS})
 
 target_link_libraries(${PLUGIN_NAME} PRIVATE 
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/${FLUTTER_TARGET_PLATFORM}/libwebrtc.so"

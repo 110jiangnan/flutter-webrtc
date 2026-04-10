@@ -89,8 +89,6 @@ scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
     std::cout << "SysAudioManager not initialized" << std::endl;
     return nullptr;
   }
-  
-#if defined(_WIN32) || defined(WINDOWS)
   auto audio_track = CreateSysAudioTrack(base, "");
   if (!audio_track) {
     std::cout << "Failed to create audio track" << std::endl;
@@ -133,10 +131,6 @@ scoped_refptr<RTCMediaStream> SysAudioManager::CreateSysAudioMediaStream(
   params[EncodableValue("videoTracks")] = EncodableValue(EncodableList());
 
   return stream;
-#else
-  std::cout << "System audio stream not available on this platform" << std::endl;
-  return nullptr;
-#endif
 }
 
 scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
@@ -151,8 +145,7 @@ scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
     std::cout << "SysAudioManager not initialized";
     return nullptr;
   }
-  
-#if defined(_WIN32) || defined(WINDOWS)
+
   std::string actual_track_id = track_id.empty() ? base->GenerateUUID() : track_id;
   
   auto audio_track = base->empty_adm_factory_->CreateAudioTrack(
@@ -165,10 +158,6 @@ scoped_refptr<RTCAudioTrack> SysAudioManager::CreateSysAudioTrack(
   }
   std::cout << "Created sys audio track: " << actual_track_id << std::endl;
   return audio_track;
-#else
-  std::cout << "System audio track not available on this platform" << std::endl;
-  return nullptr;
-#endif
 }
 
 bool SysAudioManager::StartCapture() {
@@ -182,7 +171,6 @@ bool SysAudioManager::StartCapture() {
     return true;
   }
   
-#if defined(_WIN32) || defined(WINDOWS)
   if (audio_source_->StartCapture()) {
     is_capturing_ = true;
     std::cout << "Started system audio capture" << std::endl;
@@ -191,24 +179,18 @@ bool SysAudioManager::StartCapture() {
     std::cout << "Failed to start system audio capture" << std::endl;
     return false;
   }
-#else
-  std::cout << "System audio capture not available on this platform" << std::endl;
-  return false;
-#endif
 }
 
 void SysAudioManager::StopCapture() {
   if (!is_capturing_) {
     return;
   }
-  
-#if defined(_WIN32) || defined(WINDOWS)
+
   if (audio_source_) {
     audio_source_->StopCapture();
     is_capturing_ = false;
     std::cout << "Stopped system audio capture" << std::endl;
   }
-#endif
 }
 
 bool SysAudioManager::IsCapturing() const {
@@ -221,11 +203,6 @@ bool SysAudioManager::IsInitialized() const {
 
 std::map<std::string, std::string> SysAudioManager::GetRecordingDevices() {
   std::map<std::string, std::string> devices;
-  
-#if defined(_WIN32) || defined(WINDOWS)
-  std::cout << "Getting recording devices" << std::endl;
-#endif
-  
   return devices;
 }
 
@@ -254,7 +231,6 @@ bool SysAudioManager::SwitchDevice(const std::string& device_id) {
 }
 
 void SysAudioManager::EnablePcmRecording(bool enable, const std::string& file_path) {
-#if defined(_WIN32) || defined(WINDOWS)
   if (audio_source_) {
     audio_source_->EnablePcmRecording(enable, file_path);
     std::cout << "PCM recording " << (enable ? "enabled" : "disabled") 
@@ -262,24 +238,16 @@ void SysAudioManager::EnablePcmRecording(bool enable, const std::string& file_pa
   } else {
     std::cout << "Cannot enable PCM recording - audio source not initialized" << std::endl;
   }
-#else
-  std::cout << "PCM recording not available on this platform" << std::endl;
-#endif
 }
 
 void SysAudioManager::Release() {
   StopCapture();
-  
-#if defined(_WIN32) || defined(WINDOWS)
   if (audio_source_) {
     audio_source_ = nullptr;
   }
-#endif
-  
   is_initialized_ = false;
   is_capturing_ = false;
   current_device_id_ = "";
-  
   std::cout << "SysAudioManager released" << std::endl;
 }
 
