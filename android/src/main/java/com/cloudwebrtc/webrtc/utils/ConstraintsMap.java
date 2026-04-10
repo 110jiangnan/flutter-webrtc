@@ -32,6 +32,14 @@ public class ConstraintsMap {
         return (boolean) mMap.get(name);
     }
 
+    public boolean getBool(String name){
+        Object o = mMap.get(name);
+        if(o == null) {
+            return false;
+        }
+        return (boolean) o;
+    }
+
     public double getDouble(String name){
         return (double) mMap.get(name);
     }

@@ -26,6 +26,7 @@
 #import "LocalTrack.h"
 #import "LocalAudioTrack.h"
 #import "LocalVideoTrack.h"
+#import "SysAudioTrackManager.h"
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wprotocol"
@@ -323,6 +324,15 @@ static FlutterWebRTCPlugin *sharedSingleton;
         }
 
         [_peerConnectionFactory setOptions: options];
+
+        _emptyPcFactory = [_peerConnectionFactory copySharedField];
+        [_emptyPcFactory setEmptyAdm];
+        [_emptyPcFactory initWithAudioDeviceModuleType:RTCAudioDeviceModuleTypeAudioEngine
+                                 bypassVoiceProcessing:YES
+                                        encoderFactory:simulcastFactory
+                                        decoderFactory:decoderFactory
+                                 audioProcessingModule:_audioManager.audioProcessingModule];
+        [_emptyPcFactory setOptions: options];
     }
 }
 
@@ -351,8 +361,13 @@ static FlutterWebRTCPlugin *sharedSingleton;
     NSDictionary* argsMap = call.arguments;
     NSDictionary* configuration = argsMap[@"configuration"];
     NSDictionary* constraints = argsMap[@"constraints"];
+    BOOL isSysAudio = [argsMap[@"isSysAudio"] boolValue];
+    if (![argsMap[@"isSysAudio"] isKindOfClass:[NSNumber class]]) {
+        isSysAudio = NO;
+    }
 
-    RTCPeerConnection* peerConnection = [self.peerConnectionFactory
+    RTCPeerConnectionFactory *factory = isSysAudio ? self.emptyPcFactory : self.peerConnectionFactory;
+    RTCPeerConnection* peerConnection = [factory
         peerConnectionWithConfiguration:[self RTCConfiguration:configuration]
                             constraints:[self parseMediaConstraints:constraints]
                                delegate:self];
@@ -1642,6 +1657,33 @@ static FlutterWebRTCPlugin *sharedSingleton;
       NSNumber* value = call.arguments[@"value"];
       adm.voiceProcessingBypassed = value.boolValue;
       result(nil);
+    } else if ([@"GetSysAudioMedia" isEqualToString:call.method]) {
+      NSString* deviceId = call.arguments[@"deviceId"];
+      NSString* streamId = call.arguments[@"streamId"];
+      BOOL enablePcmRecording = [call.arguments[@"enablePcmRecording"] boolValue];
+      NSString* pcmFilePath = call.arguments[@"pcmFilePath"];
+
+      SysAudioTrackManager *sysAudioManager = [SysAudioTrackManager sharedInstance];
+      NSError *error = nil;
+      NSMutableDictionary *resultData = [sysAudioManager getSysAudioMediaWithPlugin:self
+                                                                           deviceId:deviceId
+                                                                           streamId:streamId
+                                                                 enablePcmRecording:enablePcmRecording
+                                                                        pcmFilePath:pcmFilePath
+                                                                              error:&error];
+      if (!resultData) {
+        result([FlutterError errorWithCode:@"GetSysAudioMedia"
+                                   message:error.localizedDescription ?: @"Failed to get system audio media"
+                                   details:nil]);
+        return;
+      }
+      result(resultData);
+    } else if ([@"ReleaseSysAudioMedia" isEqualToString:call.method]) {
+      NSDictionary* argsMap = call.arguments;
+      NSString* streamId = argsMap[@"streamId"];
+      SysAudioTrackManager *sysAudioManager = [SysAudioTrackManager sharedInstance];
+      [sysAudioManager releaseSysAudioMediaWithPlugin:self streamId:streamId];
+      result(nil);
     } else {
       if([self handleFrameCryptorMethodCall:call result:result]) {
           return;
@@ -1664,6 +1706,7 @@ static FlutterWebRTCPlugin *sharedSingleton;
   }
   [_peerConnections removeAllObjects];
   _peerConnectionFactory = nil;
+  _emptyPcFactory = nil;
 }
 
 - (BOOL)hasLocalAudioTrack {

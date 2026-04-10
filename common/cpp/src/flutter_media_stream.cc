@@ -52,7 +52,7 @@ void FlutterMediaStream::GetUserMedia(
       GetUserVideo(constraints, stream, params);
     }
   }
-
+  std::cout << "audio_tracks1.size(): " << stream->audio_tracks().size() << std::endl;
   base_->local_streams_[uuid] = stream;
   result->Success(EncodableValue(params));
 }
@@ -179,7 +179,9 @@ void FlutterMediaStream::GetUserAudio(const EncodableMap& constraints,
     EncodableList audioTracks;
     audioTracks.push_back(EncodableValue(track_info));
     params[EncodableValue("audioTracks")] = EncodableValue(audioTracks);
+    std::cout << "audio_tracks1.size(): " << stream->audio_tracks().size() << std::endl;
     stream->AddTrack(track);
+    std::cout << "audio_tracks1.size(): " << stream->audio_tracks().size() << std::endl;
 
     base_->local_tracks_[track->id().std_string()] = track;
   }

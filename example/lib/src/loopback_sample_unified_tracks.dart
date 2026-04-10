@@ -4,6 +4,8 @@ import 'dart:core';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter_webrtc/src/sys_audio_manager.dart';
+import 'package:flutter_webrtc_example/src/sys_audio_sample.dart';
 
 class LoopBackSampleUnifiedTracks extends StatefulWidget {
   static String tag = 'loopback_sample_unified_tracks';
@@ -41,6 +43,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
   final _remoteRenderer = RTCVideoRenderer();
   bool _inCalling = false;
   bool _micOn = false;
+  bool _sysAudioOn = false;
   bool _cameraOn = false;
   bool _speakerOn = false;
   bool _audioEncrypt = false;
@@ -176,7 +179,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
   void initLocalConnection() async {
     if (_localPeerConnection != null) return;
     try {
-      var pc = await createPeerConnection(_configuration, _constraints);
+      var pc = await createPeerConnection({..._configuration,'isSysAudio': true }, _constraints);
 
       pc.onSignalingState = (state) async {
         var state2 = await pc.getSignalingState();
@@ -235,16 +238,6 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     }
   }
 
-  void _onTrack(RTCTrackEvent event) async {
-    print('onTrack ${event.track.id}');
-
-    if (event.track.kind == 'video') {
-      setState(() {
-        _remoteRenderer.srcObject = event.streams[0];
-      });
-    }
-  }
-
   void _onLocalRenegotiationNeeded() {
     print('LocalRenegotiationNeeded');
   }
@@ -279,7 +272,16 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     try {
       var pc = await createPeerConnection(_configuration, _constraints);
 
-      pc.onTrack = _onTrack;
+      pc.onTrack = (RTCTrackEvent event) async {
+        print('remote pc: onTrack ${event.track.id}');
+
+        if (event.track.kind == 'video') {
+          setState(() {
+            _remoteRenderer.srcObject = event.streams[0];
+          });
+        } else if (event.track.kind == 'audio') {
+        }
+      };
 
       pc.onSignalingState = (state) async {
         var state2 = await pc.getSignalingState();
@@ -467,10 +469,10 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
       _cameraOn = true;
     });
 
-    _timer?.cancel();
-    _timer = Timer.periodic(Duration(seconds: 1), (timer) async {
-      //handleStatsReport(timer);
-    });
+    // _timer?.cancel();
+    // _timer = Timer.periodic(Duration(seconds: 1), (timer) async {
+    //   handleStatsReport(timer);
+    // });
   }
 
   void _stopVideo() async {
@@ -501,6 +503,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
   void _startAudio() async {
     var newStream = await navigator.mediaDevices
         .getUserMedia(_getMediaConstraints(audio: true, video: false));
+    print('Audio Tracks ${newStream.getAudioTracks().length}');
 
     if (_localStream != null) {
       await _removeExistingAudioTrack();
@@ -527,6 +530,82 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     setState(() {
       _micOn = true;
     });
+    _timer?.cancel();
+    _timer = Timer.periodic(Duration(seconds: 3), (timer) async {
+      handleStatsReport(timer);
+    });
+  }
+
+  MediaStream? _sysAudioStream;
+  void _startSysAudio() async {
+    if (WebRTC.platformIsAndroid) {
+      var b = await SysAudioSampleState.requestBackgroundPermission();
+      if (!b) {
+        return;
+      }
+    }
+    if (_sysAudioStream == null) {
+      var newStream = await SysAudioManager.getSysAudioMedia(
+        deviceId: '',
+        streamId: '',
+        enablePcmRecording: false,
+        pcmFilePath: '',
+      );
+      _sysAudioStream = newStream;
+    }
+    var audioTracks = _sysAudioStream!.getAudioTracks();
+    print('SysAudio Tracks ${audioTracks.length}');
+
+    if (_localStream != null) {
+      await _removeExistingAudioTrack();
+      for (var newTrack in _sysAudioStream!.getAudioTracks()) {
+        await _localStream!.addTrack(newTrack);
+      }
+    } else {
+      _localStream = _sysAudioStream!;
+    }
+
+    await _addOrReplaceAudioTracks();
+    var transceivers = await _localPeerConnection?.getTransceivers();
+    transceivers?.forEach((transceiver) {
+      if (transceiver.sender.senderId != _audioSender?.senderId) return;
+      var codecs = acaps?.codecs
+          ?.where((element) => element.mimeType
+          .toLowerCase()
+          .contains(audioDropdownValue.toLowerCase()))
+          .toList() ??
+          [];
+      transceiver.setCodecPreferences(codecs);
+    });
+    await _negotiate();
+    setState(() {
+      _sysAudioOn = true;
+    });
+    _timer?.cancel();
+    _timer = Timer.periodic(Duration(seconds: 3), (timer) async {
+      handleStatsReport(timer);
+    });
+  }
+
+  void _stopSysAudio() async {
+    _frameCyrptors.removeWhere((key, value) {
+      if (key.startsWith('audio')) {
+        value.dispose();
+        return true;
+      }
+      return false;
+    });
+    await _removeExistingAudioTrack(fromConnection: true);
+    await _negotiate();
+    await SysAudioManager.releaseSysAudioMedia(_sysAudioStream!.id);
+    if (_sysAudioStream!.id == _localStream!.id) {
+      _localStream = null;
+    }
+    _sysAudioStream = null;
+    setState(() {
+      _sysAudioOn = false;
+    });
+    _timer?.cancel();
   }
 
   void _stopAudio() async {
@@ -542,6 +621,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
     setState(() {
       _micOn = false;
     });
+    _timer?.cancel();
   }
 
   void _switchSpeaker() async {
@@ -554,9 +634,15 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
   }
 
   void handleStatsReport(Timer timer) async {
-    if (_remotePeerConnection != null && _remoteRenderer.srcObject != null) {
-      var reports = await _remotePeerConnection
-          ?.getStats(_remoteRenderer.srcObject!.getVideoTracks().first);
+    var tracks = <MediaStreamTrack>[];
+    _remotePeerConnection?.getRemoteStreams().forEach((element) {
+      var audioTracks = element?.getAudioTracks();
+      if (audioTracks != null) {
+        tracks.addAll(audioTracks);
+      }
+    });
+    if (_remotePeerConnection != null && tracks.isNotEmpty) {
+      var reports = await _remotePeerConnection?.getStats(tracks.first);
       reports?.forEach((report) {
         print('report => { ');
         print('    id: ' + report.id + ',');
@@ -602,17 +688,22 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
 
   Future<void> _removeExistingAudioTrack({bool fromConnection = false}) async {
     var tracks = _localStream!.getAudioTracks();
-    for (var i = tracks.length - 1; i >= 0; i--) {
-      var track = tracks[i];
-      if (fromConnection) {
-        await _connectionRemoveTrack(track);
+    if (tracks.isEmpty) {
+      print('No audio tracks to remove');
+      return;
+    } else {
+      for (var i = tracks.length - 1; i >= 0; i--) {
+        var track = tracks[i];
+        if (fromConnection) {
+          await _connectionRemoveTrack(track);
+        }
+        try {
+          await _localStream!.removeTrack(track);
+        } catch (e) {
+          print(e.toString());
+        }
+        await track.stop();
       }
-      try {
-        await _localStream!.removeTrack(track);
-      } catch (e) {
-        print(e.toString());
-      }
-      await track.stop();
     }
   }
 
@@ -681,7 +772,7 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
             child: Column(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            Row(
+            Wrap(
               children: [
                 Text('audio codec:'),
                 DropdownButton<String>(
@@ -864,6 +955,13 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
                 alignment: Alignment.bottomCenter,
                 child: OverflowBar(
                   children: [
+                    FloatingActionButton(
+                        heroTag: null,
+                        backgroundColor:
+                        _sysAudioOn ? null : Theme.of(context).disabledColor,
+                        tooltip: _sysAudioOn ? 'Stop sysaudio' : 'Start sysaudio',
+                        onPressed: _sysAudioOn ? _stopSysAudio : _startSysAudio,
+                        child: Icon(_sysAudioOn ? Icons.audiotrack_sharp : Icons.audio_file)),
                     FloatingActionButton(
                         heroTag: null,
                         backgroundColor:

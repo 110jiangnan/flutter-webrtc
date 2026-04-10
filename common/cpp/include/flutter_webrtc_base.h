@@ -102,8 +102,9 @@ class FlutterWebRTCBase {
   bool CreateIceServers(const EncodableList& iceServersArray,
                         IceServer* ice_servers);
 
- protected:
+ public:
   scoped_refptr<RTCPeerConnectionFactory> factory_;
+  scoped_refptr<RTCPeerConnectionFactory> empty_adm_factory_;
   scoped_refptr<RTCAudioDevice> audio_device_;
   scoped_refptr<RTCVideoDevice> video_device_;
   scoped_refptr<RTCDesktopDevice> desktop_device_;

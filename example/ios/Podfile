@@ -32,6 +32,8 @@ target 'Runner' do
   target 'RunnerTests' do
     inherit! :search_paths
   end
+#   开发阶段方便快速迭代WebRTC-SDK
+  pod 'WebRTC-SDK', :path => '/Users/macmima1234/Desktop/zjn/deploy/Specs'
 end
 
 post_install do |installer|
