@@ -294,18 +294,16 @@
     if (!_isInitialized) {
         return;
     }
-    NSLog(@"processAudioData %d %d %d %d", bitsPerSample, sampleRate, numberOfChannels, numberOfFrames);
+//    NSLog(@"processAudioData %d %d %d %d", bitsPerSample, sampleRate, numberOfChannels, numberOfFrames);
     int audioDataSize = (int)(numberOfFrames * (bitsPerSample / 8) * numberOfChannels);
     NSData *audioDataObj = [NSData dataWithBytesNoCopy:(void *)audioData
                                                 length:audioDataSize
                                           freeWhenDone:NO];
-    @synchronized (self) {
-        // audiosource发送数据
-        [_audioSource onAudioData:audioDataObj
-                    bitsPerSample:bitsPerSample
-                       sampleRate:sampleRate
-                 numberOfChannels:numberOfChannels numberOfFrames:numberOfFrames];
-    }
+    // audiosource发送数据
+    [_audioSource onAudioData:audioDataObj
+                bitsPerSample:bitsPerSample
+                   sampleRate:sampleRate
+             numberOfChannels:numberOfChannels numberOfFrames:numberOfFrames];
 //    [self testGeneratePcmData];
     // Write to PCM file if recording is enabled
     if (_enablePcmRecording && _pcmFilePath.length > 0) {

@@ -38,6 +38,10 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
     NSInteger _sampleRate;
     NSInteger _channels;
     NSInteger _bitsPerSample;
+    
+    // Interleaved data buffer
+    char *_interleavedData;
+    size_t _interleavedBufferSize;
 }
 
 #pragma mark - Singleton
@@ -62,6 +66,8 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
         _isCapturing = NO;
         _audioCallback = NULL;
         _userData = NULL;
+        _interleavedData = NULL;
+        _interleavedBufferSize = 0;
 #if TARGET_OS_MACCATALYST || TARGET_OS_OSX
         NSLog(@"SysAudioCapturer: Initialized for macOS");
 #endif
@@ -408,9 +414,9 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
         return;
     }
     size_t totalLength = 0;
-    char *dataPointer = NULL;
-    OSStatus status = CMBlockBufferGetDataPointer(blockBuffer, 0, NULL, &totalLength, &dataPointer);
-    if (status != kCMBlockBufferNoErr || !dataPointer) {
+    char *rawDataPointer = NULL;
+    OSStatus status = CMBlockBufferGetDataPointer(blockBuffer, 0, NULL, &totalLength, &rawDataPointer);
+    if (status != kCMBlockBufferNoErr || !rawDataPointer) {
         return;
     }
     // Calculate number of frames
@@ -419,11 +425,58 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
     if (!asbd) {
         return;
     }
-    size_t bytesPerFrame = asbd->mBytesPerFrame;
-    size_t numberOfFrames = totalLength / bytesPerFrame;
-    
+    int bytesPerChannel = (int) (asbd->mBitsPerChannel / 8);
+    int channelCount = (int) asbd->mChannelsPerFrame;
+    int bytesPerFrame = bytesPerChannel * channelCount;
+    int numberOfFrames = (int) (totalLength / bytesPerFrame);
+
+    /*NSLog(@"SysAudioCapturer: mSampleRate:%d, mFormatID:%d, mFormatFlags:%d, mBytesPerPacket:%d, mFramesPerPacket:%d, mBytesPerFrame:%d, mBitsPerChannel:%d, mReserved:%d, mChannelsPerFrame:%d",
+          (int)asbd->mSampleRate, (int)asbd->mFormatID,
+          (int)asbd->mFormatFlags,(int)asbd->mBytesPerPacket,(int)asbd->mFramesPerPacket,(int)asbd->mBytesPerFrame,
+          (int)asbd->mBitsPerChannel,(int)asbd->mReserved, (int)asbd->mChannelsPerFrame);*/
+    // 只有当数据是非交错时才需要转换
+    if (asbd->mFormatFlags & kAudioFormatFlagIsNonInterleaved) {
+      // 3.1 计算新的交错格式参数
+      // 交错格式下：BytesPerFrame = 通道数 * 每个样本字节数
+      size_t interleavedBytesPerFrame = channelCount * bytesPerChannel;
+      size_t requiredBufferSize = numberOfFrames * interleavedBytesPerFrame;
+
+      // 3.2 分配或重新分配内存缓冲区用于存放交错数据
+      if (!_interleavedData || _interleavedBufferSize != requiredBufferSize) {
+          if (_interleavedData) {
+              free(_interleavedData);
+          }
+          _interleavedData = (char *)malloc(requiredBufferSize);
+          if (!_interleavedData) { return; }
+          _interleavedBufferSize = requiredBufferSize;
+      }
+
+      // 3.3 手动重排数据 (去交错化)
+      // rawDataPointer 的布局: [L0][L1]...[Ln][R0][R1]...[Rn]
+      // interleavedData 的布局: [L0][R0][L1][R1]...
+      for (size_t i = 0; i < numberOfFrames; i++) {
+        for (int c = 0; c < channelCount; c++) {
+          // 计算非交错源数据的偏移量: 通道索引 * 总帧数 * 每样本字节 + 当前帧偏移
+          size_t srcOffset = (c * numberOfFrames * bytesPerChannel) + (i * bytesPerChannel);
+          // 计算交错目标数据的偏移量: 帧索引 * 总字节每帧 + 通道偏移
+          size_t dstOffset = (i * interleavedBytesPerFrame) + (c * bytesPerChannel);
+          // 复制样本 (假设是 Float32 或 Int32, 4字节)
+          memcpy(_interleavedData + dstOffset, rawDataPointer + srcOffset, bytesPerChannel);
+        }
+      }
+
+      // 3.4 调用回调函数，传入新的交错数据和修正后的格式
+      // 注意：这里我们传入的 mFormatFlags 应该是交错的 (例如 37)
+      _audioCallback(_interleavedData,
+                     (int)asbd->mBitsPerChannel,
+                     (int)asbd->mSampleRate,
+                     (int)channelCount,
+                     (int)numberOfFrames,
+                     _userData);
+      return;
+    }
     // Call the callback with audio data
-    _audioCallback(dataPointer,
+    _audioCallback(rawDataPointer,
                    (int)asbd->mBitsPerChannel,
                    (int)asbd->mSampleRate,
                    (int)asbd->mChannelsPerFrame,
@@ -476,6 +529,11 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
 
 - (void)dealloc {
     [self stopCapture];
+    if (_interleavedData) {
+        free(_interleavedData);
+        _interleavedData = NULL;
+        _interleavedBufferSize = 0;
+    }
 }
 
 @end
