@@ -112,7 +112,8 @@ class SysAudioSource : public RTCAudioSource {
     audio_buffer.MakeRoom(bytes_size);
     audio_buffer.Write(audio_data1, bytes_size);
 
-    int empty = isEmpty(audio_data1, bytes_size);
+    // 测试
+//    int empty = isEmpty(audio_data1, bytes_size);
 
     if (enable_pcm_recording_ && pcm_file_.is_open()) {
       pcm_file_.write(static_cast<const char*>(audio_data), bytes_size);
@@ -123,12 +124,14 @@ class SysAudioSource : public RTCAudioSource {
     int target_frames = capturer_->preferred_sample_rate_ / 100;
     if (rtc_audio_source_) {
       size_t target_bytes = target_frames * bytes_per_frame;
-      std::cout << bits_per_sample << " " << sample_rate << " " << number_of_channels
-                << " " << number_of_frames << " 空的 " << empty << std::endl;
+      // 测试
+//      std::cout << bits_per_sample << " " << sample_rate << " " << number_of_channels
+//                << " " << number_of_frames << " 空的 " << empty << std::endl;
       while (audio_buffer.GetSize() >= target_bytes) {
         rtc_audio_source_->CaptureFrame(audio_buffer.GetPointer(), bits_per_sample, sample_rate,
                                         number_of_channels, target_frames);
         audio_buffer.Consume(target_bytes);
+        // 测试
 //        createData();
       }
     }  else {

@@ -196,13 +196,27 @@ bool LinuxSysAudioCapturer::InitializePulseAudio(const std::string& device_id) {
   sample_spec_.rate = sample_rate_;
   sample_spec_.channels = channels_;
 
+  // 如果没有指定设备ID,自动获取第一个 Monitor 源
+  std::string actual_device_id = device_id;
+  if (actual_device_id.empty()) {
+    auto devices = GetRecordingDevices();
+    if (!devices.empty()) {
+      actual_device_id = devices[0].first;
+      std::cout << "INFO: Auto-selected monitor source: " << actual_device_id 
+                << " (" << devices[0].second << ")" << std::endl;
+    } else {
+      std::cerr << "ERROR: No monitor sources available for system audio capture" << std::endl;
+      return false;
+    }
+  }
+
   // 创建 PulseAudio 简单流
   int error;
   pulse_stream_ = pa_simple_new(
       nullptr,                                    // 使用默认服务器
       "System Audio Capture",                     // 应用名称
       PA_STREAM_RECORD,                           // 录制模式
-      device_id.empty() ? nullptr : device_id.c_str(),  // 设备 ID
+      actual_device_id.c_str(),                   // 设备 ID (Monitor 源)
       "Record",                                   // 流描述
       &sample_spec_,                              // 采样格式
       nullptr,                                    // 使用默认通道映射
@@ -220,6 +234,7 @@ bool LinuxSysAudioCapturer::InitializePulseAudio(const std::string& device_id) {
   std::cout << "INFO: Sample rate: " << sample_spec_.rate 
             << ", Channels: " << (uint32_t) sample_spec_.channels
             << ", Format: S16LE" << std::endl;
+  std::cout << "INFO: Recording from monitor source: " << actual_device_id << std::endl;
   return true;
 }
 
