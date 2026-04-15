@@ -47,6 +47,8 @@ API_AVAILABLE(macos(14.0))
 
 - (void)setAudioDataCallback:(SysAudioDataCallback)callback userData:(void *)userData;
 
+- (int)perferSampleNum;
+
 @end
 
 NS_ASSUME_NONNULL_END

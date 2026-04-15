@@ -361,8 +361,8 @@ static FlutterWebRTCPlugin *sharedSingleton;
     NSDictionary* argsMap = call.arguments;
     NSDictionary* configuration = argsMap[@"configuration"];
     NSDictionary* constraints = argsMap[@"constraints"];
-    BOOL isSysAudio = [argsMap[@"isSysAudio"] boolValue];
-    if (![argsMap[@"isSysAudio"] isKindOfClass:[NSNumber class]]) {
+    BOOL isSysAudio = [configuration[@"isSysAudio"] boolValue];
+    if (![configuration[@"isSysAudio"] isKindOfClass:[NSNumber class]]) {
         isSysAudio = NO;
     }
 

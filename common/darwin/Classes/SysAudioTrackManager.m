@@ -8,6 +8,9 @@
 
 @implementation SysAudioTrackManager {
     NSMutableArray<NSString *> *_trackOrder;
+    
+    // Audio buffer for caching audio data
+    NSMutableData *_audioBuffer;
 }
 
 @synthesize audioSource = _audioSource;
@@ -31,6 +34,7 @@
         _isInitialized = NO;
         _enablePcmRecording = NO;
         _pcmFilePath = @"";
+        _audioBuffer = [[NSMutableData alloc] init];
     }
     return self;
 }
@@ -294,17 +298,65 @@
     if (!_isInitialized) {
         return;
     }
-//    NSLog(@"processAudioData %d %d %d %d", bitsPerSample, sampleRate, numberOfChannels, numberOfFrames);
-    int audioDataSize = (int)(numberOfFrames * (bitsPerSample / 8) * numberOfChannels);
-    NSData *audioDataObj = [NSData dataWithBytesNoCopy:(void *)audioData
-                                                length:audioDataSize
-                                          freeWhenDone:NO];
-    // audiosource发送数据
-    [_audioSource onAudioData:audioDataObj
-                bitsPerSample:bitsPerSample
-                   sampleRate:sampleRate
-             numberOfChannels:numberOfChannels numberOfFrames:numberOfFrames];
-//    [self testGeneratePcmData];
+    // NSLog(@"processAudioData %d %d %d %d", bitsPerSample, sampleRate, numberOfChannels, numberOfFrames);
+    
+    // Use perferSampleNum from audioCapturer
+    int perferSampleNum = [self.audioCapturer perferSampleNum];
+    
+    // Calculate audio data size
+    size_t bytesPerSample = bitsPerSample / 8;
+    size_t bytesPerFrame = numberOfChannels * bytesPerSample;
+    size_t audioDataSize = numberOfFrames * bytesPerFrame;
+    
+    // Check if numberOfFrames is an integer multiple of perferSampleNum
+    if (numberOfFrames % perferSampleNum == 0) {
+        // Directly send the data in chunks
+        size_t numPackets = numberOfFrames / perferSampleNum;
+        size_t bytesPerPacket = perferSampleNum * bytesPerFrame;
+        
+        for (size_t i = 0; i < numPackets; i++) {
+            // Calculate offset for current packet
+            size_t offset = i * bytesPerPacket;
+            
+            // Create NSData from the current packet without copying
+            NSData *packetData = [NSData dataWithBytes:(const char *)audioData + offset
+                                              length:bytesPerPacket];
+            
+            // Send the packet to WebRTC
+            if (_audioSource) {
+                [_audioSource onAudioData:packetData
+                            bitsPerSample:bitsPerSample
+                               sampleRate:sampleRate
+                         numberOfChannels:numberOfChannels 
+                           numberOfFrames:perferSampleNum];
+            }
+        }
+    } else {
+        // Add new audio data to buffer
+        [_audioBuffer appendBytes:audioData length:audioDataSize];
+        
+        // Calculate bytes per packet
+        size_t bytesPerPacket = perferSampleNum * bytesPerFrame;
+        
+        // Process buffer in chunks of perferSampleNum samples
+        while ([_audioBuffer length] >= bytesPerPacket) {
+            // Extract one packet of data
+            NSData *packetData = [_audioBuffer subdataWithRange:NSMakeRange(0, bytesPerPacket)];
+            
+            // Send the packet to WebRTC
+            if (_audioSource) {
+                [_audioSource onAudioData:packetData
+                            bitsPerSample:bitsPerSample
+                               sampleRate:sampleRate
+                         numberOfChannels:numberOfChannels 
+                           numberOfFrames:perferSampleNum];
+            }
+            
+            // Remove processed data from buffer
+            [_audioBuffer replaceBytesInRange:NSMakeRange(0, bytesPerPacket) withBytes:NULL length:0];
+        }
+    }
+    
     // Write to PCM file if recording is enabled
     if (_enablePcmRecording && _pcmFilePath.length > 0) {
         [self writePcmData:audioData 
@@ -386,6 +438,66 @@
                        sampleRate:sample_rate
                  numberOfChannels:(int)channels numberOfFrames:(int)number_of_frames];
     return pcmData;
+}
+
+- (NSData *)testPcm16le {
+  // 1. 定义参数
+  const int sample_rate = 48000;
+  const int channels = 2;
+  const int bits_per_sample = 16; // 16-bit
+  const int duration_ms = 10;     // 10毫秒
+
+  // 2. 计算缓冲区大小
+  int number_of_frames = (sample_rate * duration_ms) / 1000;
+  // 字节数 = 帧数 * 通道数 * 每采样字节数(2)
+  size_t buffer_size = number_of_frames * channels * (bits_per_sample / 8);
+
+  // 3. 分配内存
+  void *audio_buffer = malloc(buffer_size);
+  if (!audio_buffer) {
+    NSLog(@"内存分配失败");
+    return nil;
+  }
+
+  // 4. 生成音频数据 (正弦波)
+  // 将缓冲区视为 int16_t (short) 数组
+  int16_t *samples = (int16_t *)audio_buffer;
+
+  double frequency = 440.0; // A4 音符
+  double two_pi = 2.0 * M_PI;
+
+  for (int i = 0; i < number_of_frames; ++i) {
+    // 计算正弦波值 [-1.0, 1.0]
+    // 0.5 是音量振幅 (0.0 - 1.0)，防止爆音
+    double sine_val = 0.5 * sin(two_pi * frequency * i / sample_rate);
+
+    // 转换为 16-bit 整数 [-32768, 32767]
+    int16_t sample_val = (int16_t)(sine_val * 32767.0);
+
+    // 写入交错数据 (L R L R ...)
+    // 注意：iOS/Mac 默认是小端序 (Little Endian)，直接赋值即可
+    samples[i * 2]     = sample_val; // 左声道
+    samples[i * 2 + 1] = sample_val; // 右声道
+  }
+
+  // 5. 封装为 NSData
+  // freeWhenDone: YES 表示当 NSData 对象被释放时，自动调用 free() 释放 audio_buffer
+  NSData *pcmData = [NSData dataWithBytesNoCopy:audio_buffer
+                                         length:buffer_size
+                                   freeWhenDone:YES];
+
+  // 6. 回调 (如果需要)
+//  NSLog(@"生成 PCM: %dHz, %d通道, %d位, %d帧, 大小: %zu字节",
+//        sample_rate, channels, bits_per_sample, number_of_frames, buffer_size);
+  if (_audioSource) {
+    [_audioSource onAudioData:pcmData
+                bitsPerSample:bits_per_sample
+                   sampleRate:sample_rate
+             numberOfChannels:channels
+               numberOfFrames:number_of_frames];
+  }
+
+  return pcmData;
 }
 
 @end

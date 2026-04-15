@@ -38,6 +38,7 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
     NSInteger _sampleRate;
     NSInteger _channels;
     NSInteger _bitsPerSample;
+    int _perferSampleNum;
     
     // Interleaved data buffer
     char *_interleavedData;
@@ -63,6 +64,7 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
         _sampleRate = 48000;
         _channels = 2;
         _bitsPerSample = 16;
+        _perferSampleNum = _sampleRate / 100;
         _isCapturing = NO;
         _audioCallback = NULL;
         _userData = NULL;
@@ -169,6 +171,62 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
 - (void)setAudioDataCallback:(SysAudioDataCallback)callback userData:(void *)userData {
     _audioCallback = callback;
     _userData = userData;
+}
+
+- (int)perferSampleNum {
+    return _perferSampleNum;
+}
+
+- (char *)convertTo16Bit:(const void *)audioData 
+                  format:(AudioStreamBasicDescription)asbd 
+                   frames:(size_t)frames 
+                 channels:(int)channels {
+    // 计算 16-bit 数据的大小
+    size_t bufferSize = frames * channels * 2; // 2 bytes per sample
+    char *int16Data = (char *)malloc(bufferSize);
+    if (!int16Data) {
+        return NULL;
+    }
+    
+    // 根据不同的格式进行转换
+    if (asbd.mFormatID == kAudioFormatLinearPCM) {
+        // 检查是否是 float 格式
+        if (asbd.mBitsPerChannel == 32 && (asbd.mFormatFlags & kAudioFormatFlagIsFloat)) {
+            // 转换 float 到 int16_t
+            const float *floatSamples = (const float *)audioData;
+            int16_t *int16Samples = (int16_t *)int16Data;
+            
+            // 打印前 8 个 float 样本值
+            // size_t printCount = MIN(8, frames * channels);
+            // NSMutableString *samplesStr = [NSMutableString string];
+            // for (size_t i = 0; i < printCount; i++) {
+            //     [samplesStr appendFormat:@"%f, ", floatSamples[i]];
+            // }
+            // NSLog(@"First %zu float samples: %@", printCount, samplesStr);
+            
+            for (size_t i = 0; i < frames * channels; i++) {
+                float sample = floatSamples[i];
+                // 确保样本在 [-1.0, 1.0] 范围内
+                if (sample > 1.0) sample = 1.0;
+                if (sample < -1.0) sample = -1.0;
+                // 转换为 int16_t [-32768, 32767]
+                int16Samples[i] = (int16_t)(sample * 32767.0f);
+            }
+        } else if (asbd.mBitsPerChannel == 16) {
+            // 已经是 16-bit 格式，直接复制
+            memcpy(int16Data, audioData, bufferSize);
+        } else {
+            // 其他格式，暂时不支持
+            free(int16Data);
+            return NULL;
+        }
+    } else {
+        // 其他格式，暂时不支持
+        free(int16Data);
+        return NULL;
+    }
+    
+    return int16Data;
 }
 
 #pragma mark - AVCaptureSession Implementation
@@ -465,23 +523,60 @@ typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
         }
       }
 
-      // 3.4 调用回调函数，传入新的交错数据和修正后的格式
-      // 注意：这里我们传入的 mFormatFlags 应该是交错的 (例如 37)
-      _audioCallback(_interleavedData,
-                     (int)asbd->mBitsPerChannel,
+      // 3.4 转换为 16-bit little-endian 格式
+      char *audioData16Bit = [self convertTo16Bit:_interleavedData 
+                                            format:*asbd 
+                                             frames:numberOfFrames 
+                                           channels:channelCount];
+      if (!audioData16Bit) { return; }
+      
+      // 3.5 调用回调函数，传入 16-bit 数据
+      _audioCallback(audioData16Bit,
+                     16, // 16 bits per sample
                      (int)asbd->mSampleRate,
                      (int)channelCount,
                      (int)numberOfFrames,
                      _userData);
+      
+      // 3.6 释放临时内存
+      free(audioData16Bit);
+      return;
+    } else {
+      // 数据已经是交错格式，直接转换为 16-bit little-endian
+      char *audioData16Bit = [self convertTo16Bit:rawDataPointer 
+                                            format:*asbd 
+                                             frames:numberOfFrames 
+                                           channels:(int)asbd->mChannelsPerFrame];
+      if (!audioData16Bit) { return; }
+      
+      // 调用回调函数，传入 16-bit 数据
+      _audioCallback(audioData16Bit,
+                     16, // 16 bits per sample
+                     (int)asbd->mSampleRate,
+                     (int)asbd->mChannelsPerFrame,
+                     (int)numberOfFrames,
+                     _userData);
+      
+      // 释放临时内存
+      free(audioData16Bit);
       return;
     }
-    // Call the callback with audio data
-    _audioCallback(rawDataPointer,
-                   (int)asbd->mBitsPerChannel,
+    // 不应该到达这里，但为了安全起见，也进行转换
+    char *audioData16Bit = [self convertTo16Bit:rawDataPointer 
+                                            format:*asbd 
+                                             frames:numberOfFrames 
+                                           channels:(int)asbd->mChannelsPerFrame];
+    if (!audioData16Bit) { return; }
+    
+    _audioCallback(audioData16Bit,
+                   16, // 16 bits per sample
                    (int)asbd->mSampleRate,
                    (int)asbd->mChannelsPerFrame,
                    (int)numberOfFrames,
                    _userData);
+    
+    // 释放临时内存
+    free(audioData16Bit);
 }
 
 #pragma mark - AVCaptureAudioDataOutputSampleBufferDelegate
