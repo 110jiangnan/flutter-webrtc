@@ -12,12 +12,13 @@ NS_ASSUME_NONNULL_BEGIN
 typedef void (^SysAudioDataCallback)(const void *audioData,
                                      int bitsPerSample,
                                      int sampleRate,
-                                     size_t numberOfChannels,
-                                     size_t numberOfFrames,
+                                     int numberOfChannels,
+                                     int numberOfFrames,
                                      void *userData);
+typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
 
-API_AVAILABLE(macos(10.15))
-@interface SysAudioCapturer : NSObject
+API_AVAILABLE(macos(14.0))
+@interface SysAudioCapturer : NSObject<SCStreamDelegate, SCStreamOutput>
 
 @property (nonatomic, assign, readonly) BOOL isCapturing;
 
@@ -37,7 +38,7 @@ API_AVAILABLE(macos(10.15))
  */
 + (BOOL)isSupported;
 
-- (BOOL)startCapture:(NSError **)error;
+- (void)startCapture:(NSError **)error completion:(StartCaptureCompletion)completionBlock;
 
 /**
  * Stop capturing system audio
@@ -45,6 +46,8 @@ API_AVAILABLE(macos(10.15))
 - (void)stopCapture;
 
 - (void)setAudioDataCallback:(SysAudioDataCallback)callback userData:(void *)userData;
+
+- (int)perferSampleNum;
 
 @end
 

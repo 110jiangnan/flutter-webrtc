@@ -10,12 +10,10 @@
 #include <mutex>
 #include <thread>
 
-#include "rtc_logging.h"
-
-// PulseAudio 头文件（可选，如果编译时可用）
-#ifdef HAVE_PULSEAUDIO
+// PulseAudio 头文件
 #include <pulse/pulseaudio.h>
-#endif
+#include <pulse/simple.h>
+#include <pulse/error.h>
 
 namespace flutter_webrtc_plugin {
 
@@ -57,11 +55,13 @@ class LinuxSysAudioCapturer {
   // 获取录音设备列表（仅返回 Monitor 源/系统音频输出设备）
   static std::vector<std::pair<std::string, std::string>> GetRecordingDevices();
   
+  // 检查是否支持系统音频捕获
+  static bool IsSystemAudioCaptureSupported();
+  
   // 检查是否正在捕获
   bool IsCapturing() const { return is_capturing_; }
 
  private:
-#ifdef HAVE_PULSEAUDIO
   // PulseAudio 相关成员
   bool InitializePulseAudio(const std::string& device_id);
   void CleanupPulseAudio();
@@ -70,7 +70,6 @@ class LinuxSysAudioCapturer {
   // PulseAudio 流对象
   pa_simple* pulse_stream_ = nullptr;
   pa_sample_spec sample_spec_;
-#endif
 
   // 线程和资源管理
   std::thread capture_thread_;
@@ -81,8 +80,10 @@ class LinuxSysAudioCapturer {
   AudioDataCallback callback_ = nullptr;
   void* user_data_ = nullptr;
   mutable std::mutex mutex_;
-  
+
+public:
   // 音频参数
+  int preferred_sample_rate_ = 48000;
   int sample_rate_ = 48000;      // 采样率：48kHz
   int channels_ = 2;             // 声道数：立体声
   int bits_per_sample_ = 16;     // 位深：16-bit

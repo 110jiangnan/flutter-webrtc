@@ -40,6 +40,9 @@ class WinSysAudioCapturer {
 
   static std::vector<std::pair<std::string, std::string>> GetRecordingDevices();
   
+  // 检查是否支持系统音频捕获
+  static bool IsSystemAudioCaptureSupported();
+  
   bool IsCapturing() const { return is_capturing_; }
 
 

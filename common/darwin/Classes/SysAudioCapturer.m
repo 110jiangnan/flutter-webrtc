@@ -7,25 +7,30 @@
 // macOS implementation using ScreenCaptureKit
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 
-@interface SysAudioCapturer () <SCStreamDelegate, SCStreamOutput>
+@interface SysAudioCapturer () <SCStreamDelegate, SCStreamOutput, AVCaptureAudioDataOutputSampleBufferDelegate>
 
-@property (nonatomic, strong) SCStream *audioStream NS_AVAILABLE_MAC(12_0);
-@property (nonatomic, strong) SCContentFilter *contentFilter NS_AVAILABLE_MAC(12_0);
+@property (nonatomic, strong) SCStream *audioStream API_AVAILABLE(macos(12.3));
+@property (nonatomic, strong) SCContentFilter *contentFilter API_AVAILABLE(macos(12.3));
+@property (nonatomic, strong) AVCaptureSession *captureSession;
+@property (nonatomic, strong) AVCaptureDevice *audioDevice;
+@property (nonatomic, strong) AVCaptureDeviceInput *audioInput;
+@property (nonatomic, strong) AVCaptureAudioDataOutput *audioOutput;
 
 #endif
 
 typedef void (^SysAudioDataCallback)(const void *audioData,
                                      int bitsPerSample,
                                      int sampleRate,
-                                     size_t numberOfChannels,
-                                     size_t numberOfFrames,
+                                     int numberOfChannels,
+                                     int numberOfFrames,
                                      void *userData);
+
+typedef void(^StartCaptureCompletion)(BOOL success, NSError *error);
 
 @end
 
 @implementation SysAudioCapturer {
     BOOL _isCapturing;
-    dispatch_queue_t _audioProcessingQueue;
     SysAudioDataCallback _audioCallback;
     void *_userData;
     
@@ -33,6 +38,11 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
     NSInteger _sampleRate;
     NSInteger _channels;
     NSInteger _bitsPerSample;
+    int _perferSampleNum;
+    
+    // Interleaved data buffer
+    char *_interleavedData;
+    size_t _interleavedBufferSize;
 }
 
 #pragma mark - Singleton
@@ -40,7 +50,7 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
 + (instancetype)sharedInstance {
     static SysAudioCapturer *instance = nil;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
+    dispatch_once(&onceToken, ^{        
         instance = [[SysAudioCapturer alloc] init];
     });
     return instance;
@@ -54,11 +64,12 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
         _sampleRate = 48000;
         _channels = 2;
         _bitsPerSample = 16;
+        _perferSampleNum = _sampleRate / 100;
         _isCapturing = NO;
         _audioCallback = NULL;
         _userData = NULL;
-        _audioProcessingQueue = dispatch_queue_create("com.webrtc.sysaudio.processing", DISPATCH_QUEUE_SERIAL);
-        
+        _interleavedData = NULL;
+        _interleavedBufferSize = 0;
 #if TARGET_OS_MACCATALYST || TARGET_OS_OSX
         NSLog(@"SysAudioCapturer: Initialized for macOS");
 #endif
@@ -70,17 +81,10 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
 
 + (BOOL)isSupported {
 #if TARGET_OS_IPHONE
-    // iOS: ReplayKit does NOT support system audio capture alone
     NSLog(@"SysAudioCapturer: System audio capture is NOT supported on iOS.");
     return NO;
 #elif TARGET_OS_MACCATALYST || TARGET_OS_OSX
-    // macOS: Check OS version for ScreenCaptureKit support
-    if (@available(macOS 13.0, *)) {
-        return YES;
-    } else {
-        NSLog(@"SysAudioCapturer: macOS < 13.0 has limited support. Please upgrade to macOS 13.0+.");
-        return NO;
-    }
+    return YES;
 #else
     return NO;
 #endif
@@ -88,14 +92,17 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
 
 #pragma mark - Public Methods
 
-- (BOOL)startCapture:(NSError **)error {
+- (void)startCapture:(NSError **)error completion:(StartCaptureCompletion)completionBlock {
     if (_isCapturing) {
         if (error) {
             *error = [NSError errorWithDomain:@"SysAudioCapturer"
                                          code:1
                                      userInfo:@{NSLocalizedDescriptionKey: @"Already capturing"}];
         }
-        return NO;
+        if (completionBlock) {
+            completionBlock(NO, *error);
+        }
+        return;
     }
     
     // Check platform support
@@ -105,16 +112,40 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
                                          code:2
                                      userInfo:@{NSLocalizedDescriptionKey: @"System audio capture not supported on this platform"}];
         }
-        return NO;
+        if (completionBlock) {
+            completionBlock(NO, *error);
+        }
+        return;
     }
     
 #if TARGET_OS_MACCATALYST || TARGET_OS_OSX
     if (@available(macOS 13.0, *)) {
-        return [self startCaptureWithScreenCaptureKit:error];
+        // Try AVCaptureSession first
+        // if ([self startCaptureWithScreenCaptureKit:error completion:completionBlock]) {
+        //     return;
+        // }
+        // Fallback to ScreenCaptureKit if AVCaptureSession fails
+        [self startCaptureWithScreenCaptureKit:error completion:completionBlock];
+    } else {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SysAudioCapturer"
+                                         code:3
+                                     userInfo:@{NSLocalizedDescriptionKey: @"macOS version not supported"}];
+        }
+        if (completionBlock) {
+            completionBlock(NO, *error);
+        }
+    }
+#else
+    if (error) {
+        *error = [NSError errorWithDomain:@"SysAudioCapturer"
+                                     code:4
+                                 userInfo:@{NSLocalizedDescriptionKey: @"Platform not supported"}];
+    }
+    if (completionBlock) {
+        completionBlock(NO, *error);
     }
 #endif
-    
-    return NO;
 }
 
 - (void)stopCapture {
@@ -123,6 +154,11 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
     }
     
 #if TARGET_OS_MACCATALYST || TARGET_OS_OSX
+    if (self.captureSession) {
+        [self.captureSession stopRunning];
+        self.captureSession = nil;
+    }
+    
     if (@available(macOS 13.0, *)) {
         [self stopCaptureWithScreenCaptureKit];
     }
@@ -137,116 +173,241 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
     _userData = userData;
 }
 
+- (int)perferSampleNum {
+    return _perferSampleNum;
+}
+
+- (char *)convertTo16Bit:(const void *)audioData 
+                  format:(AudioStreamBasicDescription)asbd 
+                   frames:(size_t)frames 
+                 channels:(int)channels {
+    // 计算 16-bit 数据的大小
+    size_t bufferSize = frames * channels * 2; // 2 bytes per sample
+    char *int16Data = (char *)malloc(bufferSize);
+    if (!int16Data) {
+        return NULL;
+    }
+    
+    // 根据不同的格式进行转换
+    if (asbd.mFormatID == kAudioFormatLinearPCM) {
+        // 检查是否是 float 格式
+        if (asbd.mBitsPerChannel == 32 && (asbd.mFormatFlags & kAudioFormatFlagIsFloat)) {
+            // 转换 float 到 int16_t
+            const float *floatSamples = (const float *)audioData;
+            int16_t *int16Samples = (int16_t *)int16Data;
+            
+            // 打印前 8 个 float 样本值
+            // size_t printCount = MIN(8, frames * channels);
+            // NSMutableString *samplesStr = [NSMutableString string];
+            // for (size_t i = 0; i < printCount; i++) {
+            //     [samplesStr appendFormat:@"%f, ", floatSamples[i]];
+            // }
+            // NSLog(@"First %zu float samples: %@", printCount, samplesStr);
+            
+            for (size_t i = 0; i < frames * channels; i++) {
+                float sample = floatSamples[i];
+                // 确保样本在 [-1.0, 1.0] 范围内
+                if (sample > 1.0) sample = 1.0;
+                if (sample < -1.0) sample = -1.0;
+                // 转换为 int16_t [-32768, 32767]
+                int16Samples[i] = (int16_t)(sample * 32767.0f);
+            }
+        } else if (asbd.mBitsPerChannel == 16) {
+            // 已经是 16-bit 格式，直接复制
+            memcpy(int16Data, audioData, bufferSize);
+        } else {
+            // 其他格式，暂时不支持
+            free(int16Data);
+            return NULL;
+        }
+    } else {
+        // 其他格式，暂时不支持
+        free(int16Data);
+        return NULL;
+    }
+    
+    return int16Data;
+}
+
+#pragma mark - AVCaptureSession Implementation
+
+#if TARGET_OS_MACCATALYST || TARGET_OS_OSX
+- (BOOL)startCaptureWithAVCaptureSession:(NSError **)error completion:(StartCaptureCompletion)completionBlock {
+    NSError *setupError = nil;
+    
+    // Create capture session
+    self.captureSession = [[AVCaptureSession alloc] init];
+    
+    // Get default audio input device
+    self.audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+    if (!self.audioDevice) {
+        setupError = [NSError errorWithDomain:@"SysAudioCapturer"
+                                         code:5
+                                     userInfo:@{NSLocalizedDescriptionKey: @"No audio device found"}];
+        if (error) *error = setupError;
+        if (completionBlock) completionBlock(NO, setupError);
+        return NO;
+    }
+    
+    // Create audio input
+    self.audioInput = [AVCaptureDeviceInput deviceInputWithDevice:self.audioDevice error:&setupError];
+    if (!self.audioInput) {
+        if (error) *error = setupError;
+        if (completionBlock) completionBlock(NO, setupError);
+        return NO;
+    }
+    
+    // Add audio input to session
+    if ([self.captureSession canAddInput:self.audioInput]) {
+        [self.captureSession addInput:self.audioInput];
+    } else {
+        setupError = [NSError errorWithDomain:@"SysAudioCapturer"
+                                         code:6
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Cannot add audio input to session"}];
+        if (error) *error = setupError;
+        if (completionBlock) completionBlock(NO, setupError);
+        return NO;
+    }
+    
+    // Create audio output
+    self.audioOutput = [[AVCaptureAudioDataOutput alloc] init];
+    
+    // Set audio data delegate
+    dispatch_queue_t audioQueue = dispatch_queue_create("com.sysaudio.capturer.audio", DISPATCH_QUEUE_SERIAL);
+    [self.audioOutput setSampleBufferDelegate:self queue:audioQueue];
+    
+    // Add audio output to session
+    if ([self.captureSession canAddOutput:self.audioOutput]) {
+        [self.captureSession addOutput:self.audioOutput];
+    } else {
+        setupError = [NSError errorWithDomain:@"SysAudioCapturer"
+                                         code:7
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Cannot add audio output to session"}];
+        if (error) *error = setupError;
+        if (completionBlock) completionBlock(NO, setupError);
+        return NO;
+    }
+    
+    // Start capture session
+    [self.captureSession startRunning];
+    _isCapturing = YES;
+    
+    NSLog(@"SysAudioCapturer: Started capturing system audio with AVCaptureSession (SampleRate: %ld, Channels: %ld, BitsPerSample: %ld)",
+          (long)_sampleRate, (long)_channels, (long)_bitsPerSample);
+    
+    if (completionBlock) completionBlock(YES, nil);
+    return YES;
+}
+#endif
+
 #pragma mark - ScreenCaptureKit Implementation (macOS 13.0+)
 
 #if TARGET_OS_MACCATALYST || TARGET_OS_OSX
-- (BOOL)startCaptureWithScreenCaptureKit:(NSError **)error {
-    if (@available(macOS 13.0, *)) {
-        __block BOOL success = NO;
-        __block NSError *setupError = nil;
-        
-        // Create a dispatch group to wait for async operations
-        dispatch_group_t setupGroup = dispatch_group_create();
-        dispatch_group_enter(setupGroup);
-        
-        // 获取当前可共享的内容（显示器、窗口、应用） 关键点：即使只录音频，也需要先获取 displays（显示器列表）
-        [SCShareableContent getShareableContentExcludingDesktopWindows:NO
-                                             onScreenWindowsOnly:NO
-                                             completionHandler:^(SCShareableContent *content, NSError *getContentError) {
-            if (getContentError) {
-                setupError = getContentError;
-                NSLog(@"SysAudioCapturer: Failed to get shareable content: %@", getContentError.localizedDescription);
-                dispatch_group_leave(setupGroup);
-                return;
-            }
-            NSLog(@"SysAudioCapturer: [DEBUG] Total Displays Found: %lu", (unsigned long)content.displays.count);
-            if (content.displays.count == 0) {
-              NSLog(@"SysAudioCapturer: No displays available. User may have denied permission in the picker.");
-              setupError = [NSError errorWithDomain:@"SysAudioCapturer"
-                                               code:3
-                                           userInfo:@{NSLocalizedDescriptionKey: @"content.displays.count == 0"}];
-              return;
-            }
-            // 遍历并打印每个显示器的信息
-//            for (int i = 0; i < content.displays.count; i++) {
-//              SCShareableContentDisplay *display = content.displays[i];
-//              NSLog(@"SysAudioCapturer: [DEBUG] Display %d - ID: %llu",
-//                    i,
-//                    (unsigned long long)display.displayID);
-//            }
-            // 定义要捕获的内容范围 音频录制关键：只需指定一个显示器（displays.firstObject），无需指定窗口或应用
-            self.contentFilter = [[SCContentFilter alloc] initWithDisplay:content.displays.firstObject
-                                                  excludingApplications:@[]
-                                                  exceptingWindows:@[]];
-            
-            if (!self.contentFilter) {
-                setupError = [NSError errorWithDomain:@"SysAudioCapturer"
-                                                 code:3
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Failed to create content filter"}];
-                dispatch_group_leave(setupGroup);
-                return;
-            }
-            
-            // 配置捕获流的行为
-            SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
-            streamConfig.capturesAudio = YES;
-            if (@available(macOS 15.0, *)) {
-                streamConfig.captureMicrophone = NO;  // Only system audio, not microphone
-            }
-            streamConfig.sampleRate = (NSInteger)self->_sampleRate;
-            streamConfig.channelCount = (NSInteger)self->_channels;
-            
-            // 实际执行捕获的流对象
-            self.audioStream = [[SCStream alloc] initWithFilter:self.contentFilter
-                                                     configuration:streamConfig
-                                                     delegate:self];
-            
-            if (!self.audioStream) {
-                setupError = [NSError errorWithDomain:@"SysAudioCapturer"
-                                                 code:4
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Failed to create SCStream"}];
-                dispatch_group_leave(setupGroup);
-                return;
-            }
-            
-            // 注册音频数据回调（在指定队列中接收 CMSampleBuffer）
-            [self.audioStream addStreamOutput:self
-                              type:SCStreamOutputTypeAudio
-                              sampleHandlerQueue:self->_audioProcessingQueue
-                              error:&setupError];
-            
-            if (setupError) {
-                NSLog(@"SysAudioCapturer: Failed to add stream output: %@", setupError.localizedDescription);
-                dispatch_group_leave(setupGroup);
-                return;
-            }
-            
-            // Start the stream
-            [self.audioStream startCaptureWithCompletionHandler:^(NSError *startError) {
-                if (startError) {
-                    setupError = startError;
-                    NSLog(@"SysAudioCapturer: Failed to start capture: %@", startError.localizedDescription);
-                } else {
-                    self->_isCapturing = YES;
-                    NSLog(@"SysAudioCapturer: Started capturing system audio (SampleRate: %ld, Channels: %ld, BitsPerSample: %ld)",
-                          (long)self->_sampleRate, (long)self->_channels, (long)self->_bitsPerSample);
-                    success = YES;
-                }
-                dispatch_group_leave(setupGroup);
-            }];
-        }];
-        
-        // Wait for setup to complete (with timeout)
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC));
-        dispatch_group_wait(setupGroup, timeout);
-        
-        if (setupError && error) {
-            *error = setupError;
+- (void)startCaptureWithScreenCaptureKit:(NSError **)error completion:(StartCaptureCompletion)completionBlock {
+    __block BOOL success = NO;
+    __block NSError *setupError = nil;
+    // 获取当前可共享的内容（显示器、窗口、应用） 关键点：即使只录音频，也需要先获取 displays（显示器列表）
+    [SCShareableContent getShareableContentExcludingDesktopWindows:NO
+                                         onScreenWindowsOnly:NO
+                                         completionHandler:^(SCShareableContent *content, NSError *getContentError) {
+        if (getContentError) {
+            setupError = getContentError;
+            NSLog(@"SysAudioCapturer: Failed to get shareable content: %@", getContentError.localizedDescription);
+            if (completionBlock) completionBlock(NO, setupError);
+            return;
         }
-        NSLog(@"SysAudioCapturer: end %hhd", success);
-        return success;
-    }
-    return NO;
+        NSLog(@"SysAudioCapturer: [DEBUG] Total Displays Found: %lu", (unsigned long)content.displays.count);
+        if (content.displays.count == 0) {
+          NSLog(@"SysAudioCapturer: No displays available. User may have denied permission in the picker.");
+          setupError = [NSError errorWithDomain:@"SysAudioCapturer"
+                                           code:3
+                                       userInfo:@{NSLocalizedDescriptionKey: @"content.displays.count == 0"}];
+          if (completionBlock) completionBlock(NO, setupError);
+          return;
+        }
+        self.contentFilter = [[SCContentFilter alloc] initWithDisplay:content.displays.firstObject
+                                                excludingApplications:@[]
+                                              exceptingWindows:@[]];
+        if (!self.contentFilter) {
+            setupError = [NSError errorWithDomain:@"SysAudioCapturer"
+                                             code:3
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to create content filter"}];
+            if (completionBlock) completionBlock(NO, setupError);
+            return;
+        }
+        // 配置捕获流的行为
+        SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
+        streamConfig.capturesAudio = YES;
+        if (@available(macOS 15.0, *)) {
+            streamConfig.captureMicrophone = NO;  // Only system audio, not microphone
+        }
+        streamConfig.sampleRate = (NSInteger)self->_sampleRate;
+        streamConfig.channelCount = (NSInteger)self->_channels;
+        streamConfig.excludesCurrentProcessAudio = YES;
+
+        streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
+        streamConfig.colorSpaceName = kCGColorSpaceSRGB;
+        streamConfig.showsCursor = YES;
+        streamConfig.captureResolution = SCCaptureResolutionNominal;
+
+        // 【关键】必须设置宽高，否则不会触发回调！
+        CGSize contentSize = CGSizeMake(self.contentFilter.contentRect.size.width * self.contentFilter.pointPixelScale,
+                                self.contentFilter.contentRect.size.height * self.contentFilter.pointPixelScale);
+        streamConfig.width = contentSize.width;
+        streamConfig.height = contentSize.height;
+
+        NSLog(@"[SCK] Stream config: width=%.0zu, height=%.0zu, scale=%.2f",
+              streamConfig.width, streamConfig.height, self.contentFilter.pointPixelScale);
+        // 设置帧率
+        streamConfig.minimumFrameInterval = CMTimeMake(1, (int32_t)30);
+        // 实际执行捕获的流对象
+        self.audioStream = [[SCStream alloc] initWithFilter:self.contentFilter
+                                                 configuration:streamConfig
+                                                 delegate:self];
+        if (!self.audioStream) {
+            setupError = [NSError errorWithDomain:@"SysAudioCapturer"
+                                             code:4
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to create SCStream"}];
+            if (completionBlock) completionBlock(NO, setupError);
+            return;
+        }
+        // 注册音频数据回调（在指定队列中接收 CMSampleBuffer）
+        [self.audioStream addStreamOutput:self
+                                     type:SCStreamOutputTypeAudio
+                          sampleHandlerQueue:nil
+                          error:&setupError];
+
+        if (setupError) {
+            NSLog(@"SysAudioCapturer: Failed to add stream output: %@", setupError.localizedDescription);
+            if (completionBlock) completionBlock(NO, setupError);
+            return;
+        }
+        [self.audioStream addStreamOutput:self
+                                     type:SCStreamOutputTypeScreen
+                          sampleHandlerQueue:nil
+                                    error:&setupError];
+
+        if (setupError) {
+            NSLog(@"SysAudioCapturer: Failed to add stream output: %@", setupError.localizedDescription);
+            if (completionBlock) completionBlock(NO, setupError);
+            return;
+        }
+        // Start the stream
+        [self.audioStream startCaptureWithCompletionHandler:^(NSError *startError) {
+            if (startError) {
+                setupError = startError;
+                NSLog(@"SysAudioCapturer: Failed to start capture: %@", startError.localizedDescription);
+                if (completionBlock) completionBlock(NO, setupError);
+            } else {
+                self->_isCapturing = YES;
+                NSLog(@"SysAudioCapturer: Started capturing system audio with ScreenCaptureKit (SampleRate: %ld, Channels: %ld, BitsPerSample: %ld)",
+                      (long)self->_sampleRate, (long)self->_channels, (long)self->_bitsPerSample);
+                success = YES;
+                if (completionBlock) completionBlock(YES, nil);
+            }
+
+        }];
+    }];
 }
 
 - (void)stopCaptureWithScreenCaptureKit {
@@ -274,16 +435,154 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
     NSLog(@"SysAudioCapturer: Stream stopped with error: %@", error.localizedDescription);
     _isCapturing = NO;
 }
+- (void)userDidStopStream:(SCStream*)stream NS_SWIFT_NAME(userDidStopStream(_:))
+                              API_AVAILABLE(macos(14.4)) {
+  NSLog(@"SysAudioCapturer: userDidStopStream");
+}
+- (void)contentSharingPicker:(SCContentSharingPicker*)picker
+         didUpdateWithFilter:(SCContentFilter*)filter
+                   forStream:(SCStream*)stream {
+  NSLog(@"SysAudioCapturer: contentSharingPicker");
+}
+- (void)contentSharingPicker:(SCContentSharingPicker*)picker
+          didCancelForStream:(SCStream*)stream {
+  NSLog(@"SysAudioCapturer: contentSharingPicker");
+}
+- (void)contentSharingPickerStartDidFailWithError:(NSError*)error {
+  NSLog(@"SysAudioCapturer: contentSharingPickerStartDidFailWithError");
+}
 
 #pragma mark - SCStreamOutput Methods
 
-- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofOutputType:(SCStreamOutputType)outputType {
-    NSLog(@"SysAudioCapturer: didOutputSampleBuffer");
+- (void)stream:(SCStream*)stream
+    didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+                   ofType:(SCStreamOutputType)type {
     if (@available(macOS 13.0, *)) {
-        if (outputType != SCStreamOutputTypeAudio) {
+        if (type != SCStreamOutputTypeAudio) {
             return;
         }
     }
+    if (!_audioCallback) {
+        return;
+    }
+//    NSLog(@"SysAudioCapturer: didOutputSampleBuffer %ld", (long)type);
+    // Process audio sample buffer
+    CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
+    if (!blockBuffer) {
+        return;
+    }
+    size_t totalLength = 0;
+    char *rawDataPointer = NULL;
+    OSStatus status = CMBlockBufferGetDataPointer(blockBuffer, 0, NULL, &totalLength, &rawDataPointer);
+    if (status != kCMBlockBufferNoErr || !rawDataPointer) {
+        return;
+    }
+    // Calculate number of frames
+    CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer);
+    const AudioStreamBasicDescription *asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription);
+    if (!asbd) {
+        return;
+    }
+    int bytesPerChannel = (int) (asbd->mBitsPerChannel / 8);
+    int channelCount = (int) asbd->mChannelsPerFrame;
+    int bytesPerFrame = bytesPerChannel * channelCount;
+    int numberOfFrames = (int) (totalLength / bytesPerFrame);
+
+    /*NSLog(@"SysAudioCapturer: mSampleRate:%d, mFormatID:%d, mFormatFlags:%d, mBytesPerPacket:%d, mFramesPerPacket:%d, mBytesPerFrame:%d, mBitsPerChannel:%d, mReserved:%d, mChannelsPerFrame:%d",
+          (int)asbd->mSampleRate, (int)asbd->mFormatID,
+          (int)asbd->mFormatFlags,(int)asbd->mBytesPerPacket,(int)asbd->mFramesPerPacket,(int)asbd->mBytesPerFrame,
+          (int)asbd->mBitsPerChannel,(int)asbd->mReserved, (int)asbd->mChannelsPerFrame);*/
+    // 只有当数据是非交错时才需要转换
+    if (asbd->mFormatFlags & kAudioFormatFlagIsNonInterleaved) {
+      // 3.1 计算新的交错格式参数
+      // 交错格式下：BytesPerFrame = 通道数 * 每个样本字节数
+      size_t interleavedBytesPerFrame = channelCount * bytesPerChannel;
+      size_t requiredBufferSize = numberOfFrames * interleavedBytesPerFrame;
+
+      // 3.2 分配或重新分配内存缓冲区用于存放交错数据
+      if (!_interleavedData || _interleavedBufferSize != requiredBufferSize) {
+          if (_interleavedData) {
+              free(_interleavedData);
+          }
+          _interleavedData = (char *)malloc(requiredBufferSize);
+          if (!_interleavedData) { return; }
+          _interleavedBufferSize = requiredBufferSize;
+      }
+
+      // 3.3 手动重排数据 (去交错化)
+      // rawDataPointer 的布局: [L0][L1]...[Ln][R0][R1]...[Rn]
+      // interleavedData 的布局: [L0][R0][L1][R1]...
+      for (size_t i = 0; i < numberOfFrames; i++) {
+        for (int c = 0; c < channelCount; c++) {
+          // 计算非交错源数据的偏移量: 通道索引 * 总帧数 * 每样本字节 + 当前帧偏移
+          size_t srcOffset = (c * numberOfFrames * bytesPerChannel) + (i * bytesPerChannel);
+          // 计算交错目标数据的偏移量: 帧索引 * 总字节每帧 + 通道偏移
+          size_t dstOffset = (i * interleavedBytesPerFrame) + (c * bytesPerChannel);
+          // 复制样本 (假设是 Float32 或 Int32, 4字节)
+          memcpy(_interleavedData + dstOffset, rawDataPointer + srcOffset, bytesPerChannel);
+        }
+      }
+
+      // 3.4 转换为 16-bit little-endian 格式
+      char *audioData16Bit = [self convertTo16Bit:_interleavedData 
+                                            format:*asbd 
+                                             frames:numberOfFrames 
+                                           channels:channelCount];
+      if (!audioData16Bit) { return; }
+      
+      // 3.5 调用回调函数，传入 16-bit 数据
+      _audioCallback(audioData16Bit,
+                     16, // 16 bits per sample
+                     (int)asbd->mSampleRate,
+                     (int)channelCount,
+                     (int)numberOfFrames,
+                     _userData);
+      
+      // 3.6 释放临时内存
+      free(audioData16Bit);
+      return;
+    } else {
+      // 数据已经是交错格式，直接转换为 16-bit little-endian
+      char *audioData16Bit = [self convertTo16Bit:rawDataPointer 
+                                            format:*asbd 
+                                             frames:numberOfFrames 
+                                           channels:(int)asbd->mChannelsPerFrame];
+      if (!audioData16Bit) { return; }
+      
+      // 调用回调函数，传入 16-bit 数据
+      _audioCallback(audioData16Bit,
+                     16, // 16 bits per sample
+                     (int)asbd->mSampleRate,
+                     (int)asbd->mChannelsPerFrame,
+                     (int)numberOfFrames,
+                     _userData);
+      
+      // 释放临时内存
+      free(audioData16Bit);
+      return;
+    }
+    // 不应该到达这里，但为了安全起见，也进行转换
+    char *audioData16Bit = [self convertTo16Bit:rawDataPointer 
+                                            format:*asbd 
+                                             frames:numberOfFrames 
+                                           channels:(int)asbd->mChannelsPerFrame];
+    if (!audioData16Bit) { return; }
+    
+    _audioCallback(audioData16Bit,
+                   16, // 16 bits per sample
+                   (int)asbd->mSampleRate,
+                   (int)asbd->mChannelsPerFrame,
+                   (int)numberOfFrames,
+                   _userData);
+    
+    // 释放临时内存
+    free(audioData16Bit);
+}
+
+#pragma mark - AVCaptureAudioDataOutputSampleBufferDelegate
+
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    NSLog(@"SysAudioCapturer: AVCaptureAudioDataOutputSampleBufferDelegate called");
     if (!_audioCallback) {
         return;
     }
@@ -307,6 +606,9 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
     size_t bytesPerFrame = asbd->mBytesPerFrame;
     size_t numberOfFrames = totalLength / bytesPerFrame;
     
+    NSLog(@"SysAudioCapturer: Audio data received - Length: %zu, Frames: %zu, SampleRate: %f, Channels: %u, BitsPerChannel: %u",
+          totalLength, numberOfFrames, asbd->mSampleRate, asbd->mChannelsPerFrame, (unsigned int)asbd->mBitsPerChannel);
+    
     // Call the callback with audio data
     _audioCallback(dataPointer,
                    (int)asbd->mBitsPerChannel,
@@ -315,12 +617,18 @@ typedef void (^SysAudioDataCallback)(const void *audioData,
                    numberOfFrames,
                    _userData);
 }
+
 #endif
 
 #pragma mark - Dealloc
 
 - (void)dealloc {
     [self stopCapture];
+    if (_interleavedData) {
+        free(_interleavedData);
+        _interleavedData = NULL;
+        _interleavedBufferSize = 0;
+    }
 }
 
 @end
