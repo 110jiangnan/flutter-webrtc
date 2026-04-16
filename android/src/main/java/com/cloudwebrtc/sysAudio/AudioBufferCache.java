@@ -7,7 +7,8 @@ public class AudioBufferCache {
     private final byte[] buffer;      // 核心缓存数组
     private int readPos = 0;          // 读指针（数据起始位置）
     private int writePos = 0;         // 写指针（数据结束位置）
-    private final int targetFrameSize; // 目标 10ms 字节数
+    public final int targetFrameSize; // 目标 10ms 字节数
+    public final int targetFrameNum;
     public Queue<byte[]> queue = new LinkedList<>();
 
     /**
@@ -16,6 +17,7 @@ public class AudioBufferCache {
     public AudioBufferCache(int sampleRate, int channels, int bitsPerSample) {
         // 计算 10ms 的字节大小
         int samplesPer10ms = sampleRate / 100;
+        this.targetFrameNum = samplesPer10ms;
         this.targetFrameSize = samplesPer10ms * channels * (bitsPerSample / 8);
 
         // 预分配缓冲区，假设最大能容纳 100ms 数据，防止频繁扩容

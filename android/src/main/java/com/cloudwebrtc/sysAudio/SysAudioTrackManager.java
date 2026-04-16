@@ -270,29 +270,16 @@ public class SysAudioTrackManager {
             return;
         }
         // 假数据测试使用
-        byte[] testData = SystemAudioHelper.createData();
+        /*byte[] testData = SystemAudioHelper.createData();
         int number_of_frames = testData.length / (bitsPerSample / 8) / channels;
-        audioSource.OnData(testData, bitsPerSample, sampleRate, channels, number_of_frames);
+        audioSource.OnData(testData, bitsPerSample, sampleRate, channels, number_of_frames);*/
 
-        /*audioBufferCache.addData(pcmData);
+        audioBufferCache.addData(pcmData);
         byte[] frame;
         while ((frame = audioBufferCache.pollFrame()) != null) {
-            // 构造 AudioSamples 对象
-            JavaAudioDeviceModule.AudioSamples audioSamples =
-                    new JavaAudioDeviceModule.AudioSamples(SystemAudioCapturer.AUDIO_FORMAT, channels,
-                            sampleRate, frame);
-
-            // 遍历所有 AudioTrack 并推送数据
-            for (LocalTrack track : audioTracks.values()) {
-                if (track != null) {
-                    // 调用 LocalAudioTrack 的回调方法
-                    if (track instanceof LocalAudioTrack) {
-                        ((LocalAudioTrack) track).onWebRtcAudioRecordSamplesReady(audioSamples);
-                    }
-                }
-            }
+            audioSource.OnData(frame, bitsPerSample, sampleRate, channels, audioBufferCache.targetFrameNum);
             audioBufferCache.queue.offer(frame);
-        }*/
+        }
 
         if (enablePcmRecord && pcmPath != null && fos != null) {
             try {

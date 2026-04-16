@@ -288,9 +288,9 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     recordSamplesReadyCallbackAdapter.addCallback(new JavaAudioDeviceModule.SamplesReadyCallback() {
       @Override
       public void onWebRtcAudioRecordSamplesReady(JavaAudioDeviceModule.AudioSamples audioSamples) {
-        Log.i("zjn", Thread.currentThread().getName() +
-                ":audioDeviceModule有音频数据: localTracks.size：" +
-                localTracks.size());
+//        Log.i("zjn", Thread.currentThread().getName() +
+//                ":audioDeviceModule有音频数据: localTracks.size：" +
+//                localTracks.size());
         for(LocalTrack track : localTracks.values()) {
           if (track instanceof LocalAudioTrack && Objects.equals(track.sType, "audio")) {
             ((LocalAudioTrack) track).onWebRtcAudioRecordSamplesReady(audioSamples);

@@ -2,7 +2,7 @@ include(ExternalProject)
 
 set(ZIPFILE "${CMAKE_CURRENT_LIST_DIR}/downloads/libwebrtc.zip")
 #set(DOWNLOAD_URL "https://github.com/flutter-webrtc/flutter-webrtc/releases/download/v1.2.1/libwebrtc.zip")
-set(DOWNLOAD_URL "https://gitee.com/jiangnan-java/flutter-webrtc/releases/download/zjn_1-1.2.1/libwebrtc.zip")
+set(DOWNLOAD_URL "https://gitee.com/jiangnan-java/flutter-webrtc/releases/download/zjn_1.2.2/libwebrtc.zip")
 
 if(NOT EXISTS "${ZIPFILE}")
   message(NOTICE "download: ${DOWNLOAD_URL}")
