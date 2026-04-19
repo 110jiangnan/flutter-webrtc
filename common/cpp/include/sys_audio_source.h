@@ -111,10 +111,8 @@ class SysAudioSource : public RTCAudioSource {
     int bytes_size = bytes_per_frame * static_cast<int>(number_of_frames);
     audio_buffer.MakeRoom(bytes_size);
     audio_buffer.Write(audio_data1, bytes_size);
-
     // 测试
 //    int empty = isEmpty(audio_data1, bytes_size);
-
     if (enable_pcm_recording_ && pcm_file_.is_open()) {
       pcm_file_.write(static_cast<const char*>(audio_data), bytes_size);
       pcm_file_.flush();
@@ -164,7 +162,7 @@ class SysAudioSource : public RTCAudioSource {
     double frequency = 440.0; // A4 音符
 
     for (int i = 0; i < number_of_frames; ++i) {
-      double value = 0.5 * sin(2.0 * 3.14159265358979323846 * frequency * i / sample_rate);
+      double value = 0.1 * sin(2.0 * 3.14159265358979323846 * frequency * i / sample_rate);
       int16_t sample_val = static_cast<int16_t>(value * 32767);
       samples[i * 2] = sample_val;
       samples[i * 2 + 1] = sample_val;

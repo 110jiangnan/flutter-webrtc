@@ -40,15 +40,14 @@ class WinSysAudioCapturer {
 
   static std::vector<std::pair<std::string, std::string>> GetRecordingDevices();
   
-  // 检查是否支持系统音频捕获
   static bool IsSystemAudioCaptureSupported();
   
   bool IsCapturing() const { return is_capturing_; }
 
 
-  int preferred_sample_rate_ = 48000;      // 48kHz sample rate
-  int preferred_bits_per_sample_ = 16;     // 16-bit depth
-  int preferred_channels_ = 2;             // Stereo (2 channels)
+  int preferred_sample_rate_ = 48000;
+  int preferred_bits_per_sample_ = 16;
+  int preferred_channels_ = 2;
 
  private:
   void CaptureThread();

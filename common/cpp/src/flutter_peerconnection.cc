@@ -330,8 +330,13 @@ void FlutterPeerConnection::CreateRTCPeerConnection(
       base_->ParseMediaConstraints(constraintsMap);
 
   std::string uuid = base_->GenerateUUID();
+  auto fac = base_->factory_;
+  auto isSysAudio = findBoolean(configurationMap,"isSysAudio");
+  if (isSysAudio) {
+    fac = base_->empty_adm_factory_;
+  }
   scoped_refptr<RTCPeerConnection> pc =
-      base_->factory_->Create(base_->configuration_, constraints);
+      fac->Create(base_->configuration_, constraints);
   base_->peerconnections_[uuid] = pc;
 
   std::string event_channel = "FlutterWebRTC/peerConnectionEvent" + uuid;
