@@ -32,6 +32,8 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/sys_audio_source.cc"
   "../common/cpp/src/sys_audio_manager.cc"
   "../common/cpp/src/win_sys_audio_capturer.cc"
+  "application_loopback_capturer.cc"
+  "loopback_capturer_factory.cc"
   "flutter_webrtc_plugin.cc"
   "task_runner_windows.cc"
 )
@@ -56,6 +58,13 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE
   flutter
   flutter_wrapper_plugin
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/libwebrtc.dll.lib"
+  avrt.lib
+  ksuser.lib
+  mmdevapi.lib
+  ole32.lib
+  runtimeobject.lib
+  uuid.lib
+  winmm.lib
 )
 
 # List of absolute paths to libraries that should be bundled with the plugin

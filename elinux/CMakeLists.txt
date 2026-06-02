@@ -33,6 +33,7 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/sys_audio_source.cc"
   "../common/cpp/src/sys_audio_manager.cc"
   "../common/cpp/src/linux_sys_audio_capturer.cc"
+  "../linux/loopback_capturer_factory.cc"
   "flutter_webrtc_plugin.cc"
 )
 
