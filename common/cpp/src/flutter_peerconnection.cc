@@ -321,11 +321,9 @@ void FlutterPeerConnection::CreateRTCPeerConnection(
     const EncodableMap& configurationMap,
     const EncodableMap& constraintsMap,
     std::unique_ptr<MethodResultProxy> result) {
-  // std::cout << " configuration = " << configurationMap.StringValue() <<
-  // std::endl;
+//  std::cout << " configuration = " << configurationMap.StringValue() << std::endl;
   base_->ParseRTCConfiguration(configurationMap, base_->configuration_);
-  // std::cout << " constraints = " << constraintsMap.StringValue() <<
-  // std::endl;
+//  std::cout << " constraints = " << constraintsMap.StringValue() << std::endl;
   scoped_refptr<RTCMediaConstraints> constraints =
       base_->ParseMediaConstraints(constraintsMap);
 

@@ -32,7 +32,11 @@ class FlutterWebRTCPluginImpl : public FlutterWebRTCPlugin {
     registrar->AddPlugin(std::move(plugin));
   }
 
-  virtual ~FlutterWebRTCPluginImpl() {}
+  virtual ~FlutterWebRTCPluginImpl() {
+    if (g_shared_instance == webrtc_.get()) {
+      g_shared_instance = nullptr;
+    }
+  }
 
   BinaryMessenger* messenger() { return messenger_; }
 
