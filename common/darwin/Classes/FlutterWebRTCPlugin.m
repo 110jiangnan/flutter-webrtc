@@ -11,6 +11,8 @@
 #import "FlutterRTCFrameCryptor.h"
 #if TARGET_OS_IPHONE
 #import "FlutterRTCMediaRecorder.h"
+#endif
+#if TARGET_OS_IPHONE || TARGET_OS_OSX
 #import "FlutterRTCVideoPlatformViewFactory.h"
 #import "FlutterRTCVideoPlatformViewController.h"
 #endif
@@ -118,8 +120,8 @@ void postEvent(FlutterEventSink _Nullable sink, id _Nullable event) {
   BOOL _speakerOnButPreferBluetooth;
   AVAudioSessionPort _preferredInput;
   AudioManager* _audioManager;
-#if TARGET_OS_IPHONE
-  FLutterRTCVideoPlatformViewFactory *_platformViewFactory;
+#if TARGET_OS_IPHONE || TARGET_OS_OSX
+  FlutterRTCVideoPlatformViewFactory *_platformViewFactory;
 #endif
 
   RTC_OBJC_TYPE(RTCCallbackLogger) * loggerCallback;
@@ -209,8 +211,10 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 #if TARGET_OS_IPHONE
     _preferredInput = AVAudioSessionPortHeadphones;
     self.viewController = viewController;
-    _platformViewFactory  = [[FLutterRTCVideoPlatformViewFactory alloc] initWithMessenger:messenger];
-    [registrar registerViewFactory:_platformViewFactory withId:FLutterRTCVideoPlatformViewFactoryID];
+#endif
+#if TARGET_OS_IPHONE || TARGET_OS_OSX
+    _platformViewFactory  = [[FlutterRTCVideoPlatformViewFactory alloc] initWithMessenger:messenger];
+    [registrar registerViewFactory:_platformViewFactory withId:FlutterRTCVideoPlatformViewFactoryID];
 #endif
   }
 
@@ -960,7 +964,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
     [self rendererSetSrcObject:render stream:videoTrack];
     result(nil);
   }
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE || TARGET_OS_OSX
   else if ([@"videoPlatformViewRendererSetSrcObject" isEqualToString:call.method]) {
       NSDictionary* argsMap = call.arguments;
       NSNumber* viewId = argsMap[@"viewId"];
