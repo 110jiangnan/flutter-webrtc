@@ -117,6 +117,6 @@ dependencies {
 //    implementation 'io.github.webrtc-sdk:android:137.7151.04'
     implementation 'zjn.xyz.webrtc-sdk:android:z1.137.7151.05'
 
-    implementation 'com.github.davidliu:audioswitch:89582c47c9a04c62f90aa5e57251af4800a62c9a'
+    implementation 'com.github.davidliu:audioswitch:039a35aefab7747c557242fa216c9ea11743b604'
     implementation 'androidx.annotation:annotation:1.1.0'
 }
