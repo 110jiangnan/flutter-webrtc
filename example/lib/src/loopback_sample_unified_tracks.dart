@@ -179,7 +179,8 @@ class _MyAppState extends State<LoopBackSampleUnifiedTracks> {
   void initLocalConnection() async {
     if (_localPeerConnection != null) return;
     try {
-      var pc = await createPeerConnection({..._configuration,'isSysAudio': true }, _constraints);
+      // ,'isSysAudio': true
+      var pc = await createPeerConnection({..._configuration }, _constraints);
 
       pc.onSignalingState = (state) async {
         var state2 = await pc.getSignalingState();
