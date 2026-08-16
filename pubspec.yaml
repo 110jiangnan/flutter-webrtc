@@ -9,6 +9,7 @@ environment:
 dependencies:
   collection: ^1.17.0
   dart_webrtc: ^1.6.0
+  ffigen: ^19.0.0
   flutter:
     sdk: flutter
   logger: ^2.0.2+1

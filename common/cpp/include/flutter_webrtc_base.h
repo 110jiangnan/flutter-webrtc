@@ -13,6 +13,7 @@
 
 #include "rtc_audio_device.h"
 #include "rtc_audio_processing.h"
+#include "rtc_desktop_capturer.h"
 #include "rtc_desktop_device.h"
 #include "rtc_dtmf_sender.h"
 #include "rtc_media_stream.h"
@@ -115,6 +116,8 @@ class FlutterWebRTCBase {
   std::map<std::string, scoped_refptr<RTCMediaStream>> local_streams_;
   std::map<std::string, scoped_refptr<RTCMediaTrack>> local_tracks_;
   std::map<std::string, scoped_refptr<RTCVideoCapturer>> video_capturers_;
+  // last getDisplayMedia
+  scoped_refptr<RTCDesktopCapturer> desktop_capturer_;
   std::map<int64_t, std::shared_ptr<FlutterVideoRenderer>> renders_;
   std::map<std::string, std::shared_ptr<FlutterRTCDataChannelObserver>>
       data_channel_observers_;

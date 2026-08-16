@@ -28,6 +28,9 @@ class FlutterScreenCapture : public MediaListObserver,
                                  int height,
                                  std::unique_ptr<MethodResultProxy> result);
 
+  void SetExternalFrameCallback(const EncodableMap& args,
+                                std::unique_ptr<MethodResultProxy> result);
+
  protected:
   void OnMediaSourceAdded(scoped_refptr<MediaSource> source) override;
 

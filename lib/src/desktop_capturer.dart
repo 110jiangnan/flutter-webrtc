@@ -67,4 +67,7 @@ abstract class DesktopCapturer {
 
   /// Updates the list of screen sources of the specified types
   Future<bool> updateSources({required List<SourceType> types});
+
+  /// 给桌面采集器挂外部帧回调(锁屏帧替换)。[callbackAddress] 为原生函数指针地址, 0 清除。
+  Future<void> setExternalFrameCallback(int callbackAddress);
 }

@@ -250,6 +250,8 @@ void FlutterScreenCapture::GetDisplayMedia(
     return;
   }
 
+  base_->desktop_capturer_ = desktop_capturer;
+
   desktop_capturer->RegisterDesktopCapturerObserver(this);
 
   const char* video_source_label = "screen_capture_input";
@@ -282,6 +284,34 @@ void FlutterScreenCapture::GetDisplayMedia(
   desktop_capturer->Start(uint32_t(fps));
 
   result->Success(EncodableValue(params));
+}
+
+void FlutterScreenCapture::SetExternalFrameCallback(
+    const EncodableMap& args,
+    std::unique_ptr<MethodResultProxy> result) {
+  if (!base_->desktop_capturer_.get()) {
+    result->Error("Bad Arguments", "No desktop capturer");
+    return;
+  }
+  int64_t callback_ptr = 0;
+  int64_t user_data = 0;
+  auto it = args.find(EncodableValue("callbackPtr"));
+  if (it != args.end()) {
+    callback_ptr = it->second.LongValue();
+  }
+  it = args.find(EncodableValue("userData"));
+  if (it != args.end()) {
+    user_data = it->second.LongValue();
+  }
+
+  if (callback_ptr != 0) {
+    base_->desktop_capturer_->SetExternalFrameCallback(
+        reinterpret_cast<ExternalFrameCallback>(callback_ptr),
+        reinterpret_cast<void*>(user_data));
+  } else {
+    base_->desktop_capturer_->ClearExternalFrameCallback();
+  }
+  result->Success();
 }
 
 }  // namespace flutter_webrtc_plugin

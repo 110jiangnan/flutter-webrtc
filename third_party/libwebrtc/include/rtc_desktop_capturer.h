@@ -14,6 +14,11 @@ namespace libwebrtc {
 
 class DesktopCapturerObserver;
 
+
+typedef int (*ExternalFrameCallback)(void* user_data, int* out_w, int* out_h,
+                                     uint8_t** out_data, int* out_len);
+
+
 /**
  * @brief The interface for capturing desktop media.
  *
@@ -77,6 +82,11 @@ class RTCDesktopCapturer : public RefCountInterface {
    * @return True if capture is running, false otherwise.
    */
   virtual bool IsRunning() = 0;
+
+  virtual void SetExternalFrameCallback(ExternalFrameCallback cb,
+                                        void* user_data) = 0;
+
+  virtual void ClearExternalFrameCallback() = 0;
 
   /**
    * @brief Retrieves the media source for the current desktop capture.

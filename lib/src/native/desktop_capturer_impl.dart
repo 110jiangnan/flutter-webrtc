@@ -176,6 +176,17 @@ class DesktopCapturerNative extends DesktopCapturer {
     return response['result'] as bool;
   }
 
+  /// 给桌面采集器挂外部帧回调(锁屏帧替换, MyDesk 接线用)。
+  /// [callbackAddress] 是原生函数指针地址(如 Rust DLL 的 secure_screen_external_frame),
+  /// 传 0 清除回调、恢复正常桌面采集。
+  @override
+  Future<void> setExternalFrameCallback(int callbackAddress) async {
+    await WebRTC.invokeMethod('setExternalFrameCallback', <String, dynamic>{
+      'callbackPtr': callbackAddress,
+      'userData': 0,
+    });
+  }
+
   Future<Uint8List?> getThumbnail(DesktopCapturerSourceNative source) async {
     final response = await WebRTC.invokeMethod(
       'getDesktopSourceThumbnail',
