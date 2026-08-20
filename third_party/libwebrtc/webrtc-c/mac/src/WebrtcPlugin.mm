@@ -1,0 +1,1292 @@
+/* WebrtcPlugin.mm — mac 独立 C ABI 的插件实现。
+ *
+ * 照抄自 common/darwin/Classes/FlutterWebRTCPlugin.m，去掉 Flutter：
+ *   - 仅保留 webrtc-cli 用的 38 个 webrtc_* C 函数对应的业务方法；
+ *   - FlutterResult → WebrtcResult(C 函数指针包装)；FlutterEventSink → WebrtcEventCallback；
+ *   - 方法/字段名与 darwin 保持一致。
+ * 本文件 = 单例中枢 + JSON/C 桥 + 顶层 C ABI 入口层。
+ */
+#import <Foundation/Foundation.h>
+#import <WebRTC/WebRTC.h>
+#import <objc/runtime.h>
+
+#import "WebrtcPlugin.h"
+#import "WebrtcRTCPeerConnection.h"
+#import "WebrtcRTCDataChannel.h"
+#import "WebrtcRTCDesktopCapturer.h"
+#import "SysAudioTrackManager.h"
+#import "AudioManager.h"
+
+#pragma mark - JSON 桥工具
+
+struct WebrtcJsonBridge {
+  // NSDictionary/NSArray/NSString/NSNumber/NSNull 可直接序列化; NSData → base64
+};
+static NSData* __nullable WebrtcJsonData(NSDictionary* __nonnull dict);
+static id __nonnull WebrtcJsonSanitize(id __nullable obj);
+
+static NSData* WebrtcJsonData(NSDictionary* dict) {
+  if (!dict) return nil;
+  return [NSJSONSerialization dataWithJSONObject:WebrtcJsonSanitize(dict)
+                                         options:0
+                                           error:nil];
+}
+
+// NSData → base64 字符串, 其余原样。递归处理嵌套 dict/array。
+static id WebrtcJsonSanitize(id obj) {
+  if (!obj) return [NSNull null];
+  if ([obj isKindOfClass:[NSData class]]) {
+    return [(NSData*)obj base64EncodedStringWithOptions:0];
+  }
+  if ([obj isKindOfClass:[NSDictionary class]]) {
+    NSMutableDictionary* out = [NSMutableDictionary dictionaryWithCapacity:[obj count]];
+    for (id k in obj) {
+      out[k] = WebrtcJsonSanitize(obj[k]);
+    }
+    return out;
+  }
+  if ([obj isKindOfClass:[NSArray class]]) {
+    NSMutableArray* out = [NSMutableArray arrayWithCapacity:[obj count]];
+    for (id item in obj) {
+      [out addObject:WebrtcJsonSanitize(item)];
+    }
+    return out;
+  }
+  return obj;
+}
+
+static NSDictionary* __nullable WebrtcParseJson(const char* json) {
+  if (!json || json[0] == '\0') return nil;
+  NSData* data = [NSData dataWithBytes:json length:strlen(json)];
+  id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if ([obj isKindOfClass:[NSDictionary class]]) return obj;
+  return nil;
+}
+
+static NSString* __nullable WebrtcCString(const char* s) {
+  return (s && s[0]) ? [NSString stringWithUTF8String:s] : nil;
+}
+
+// malloc 字符串, 由 webrtc_free_string 释放
+static char* WebrtcMallocString(NSString* __nullable s) {
+  if (!s) return NULL;
+  const char* utf8 = s.UTF8String;
+  if (!utf8) return NULL;
+  char* out = (char*)malloc(strlen(utf8) + 1);
+  if (out) strcpy(out, utf8);
+  return out;
+}
+
+#pragma mark - WebrtcEventCallback / WebrtcError / WebrtcResultMake
+
+@implementation WebrtcEventCallback
+
+- (void)post:(NSDictionary*)event {
+  NSString* json = [[NSString alloc] initWithData:WebrtcJsonData(event) encoding:NSUTF8StringEncoding];
+  if (json) [self postString:json];
+}
+
+- (void)postString:(NSString*)json {
+  if (!self.cb) return;
+  webrtc_event_cb cb = self.cb;
+  void* ud = self.userData;
+  const char* cstr = [json UTF8String];
+  char* copy = (char*)malloc(strlen(cstr) + 1);
+  if (copy) strcpy(copy, cstr);
+  // darwin 的 postEvent 派发主线程; 事件由 webrtc signaling 线程触发, 保持一致
+  dispatch_async(dispatch_get_main_queue(), ^{
+    cb(ud, copy);
+    free(copy);
+  });
+}
+
+@end
+
+@implementation WebrtcError
++ (instancetype)errorWithCode:(NSString*)code message:(NSString*)message details:(id)details {
+  WebrtcError* e = [WebrtcError new];
+  e.code = code;
+  e.message = message;
+  e.details = details;
+  return e;
+}
+@end
+
+static void WebrtcResultFire(webrtc_result_cb cb, void* ud, int err, id result) {
+  NSString* json = nil;
+  if (result && [result isKindOfClass:[NSDictionary class]]) {
+    json = [[NSString alloc] initWithData:WebrtcJsonData(result) encoding:NSUTF8StringEncoding];
+  }
+  const char* cjson = json ? [json UTF8String] : NULL;
+  char* copy = cjson ? (char*)malloc(strlen(cjson) + 1) : NULL;
+  if (copy) strcpy(copy, cjson);
+  cb(ud, err, copy);
+  if (copy) free(copy);
+}
+
+WebrtcResult WebrtcResultMake(void* userData, webrtc_result_cb cb) {
+  __block webrtc_result_cb fcb = cb;
+  __block void* fud = userData;
+  return ^(id result) {
+    if (fcb == NULL) return;
+    if ([result isKindOfClass:[WebrtcError class]]) {
+      WebrtcError* e = result;
+      NSString* msg = e.message ? e.message : e.code ? e.code : @"error";
+      // 用 C 字符串错误码回调失败(err!=0)
+      const char* m = [msg UTF8String];
+      char* copy = (char*)malloc(strlen(m) + 1);
+      if (copy) strcpy(copy, m);
+      fcb(fud, 1, copy);
+      if (copy) free(copy);
+      return;
+    }
+    if (result == nil || result == [NSNull null]) {
+      fcb(fud, 0, NULL);
+      return;
+    }
+    WebrtcResultFire(fcb, fud, 0, result);
+  };
+}
+
+#pragma mark - WebrtcPlugin 实现
+
+@implementation WebrtcPlugin {
+  RTCCallbackLogger* loggerCallback;
+}
+
+static WebrtcPlugin* sharedInstance_;
+
++ (WebrtcPlugin*)sharedInstance {
+  @synchronized(self) {
+    if (!sharedInstance_) {
+      sharedInstance_ = [[WebrtcPlugin alloc] init];
+    }
+    return sharedInstance_;
+  }
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    self.peerConnections = [NSMutableDictionary new];
+    self.localStreams = [NSMutableDictionary new];
+    self.localTracks = [NSMutableDictionary new];
+    self.videoCapturerStopHandlers = [NSMutableDictionary new];
+    self.audioManager = AudioManager.sharedInstance;
+  }
+  return self;
+}
+
+- (void)ensureAudioSession {
+  // macOS 无 AVAudioSession; darwin 的 ensureAudioSession 为 iOS 专用, 此处空实现
+}
+
+- (void)initializeFactory {
+  [self initializeFactoryWithNetworkIgnoreMask:nil
+                        bypassVoiceProcessing:NO
+                                     severity:nil];
+}
+
+- (void)initializeFactoryWithNetworkIgnoreMask:(NSArray*)networkIgnoreMask
+                         bypassVoiceProcessing:(BOOL)bypassVoiceProcessing
+                                      severity:(NSString*)severityStr {
+  if (!_peerConnectionFactory) {
+    VideoDecoderFactory* decoderFactory = [[VideoDecoderFactory alloc] init];
+    VideoEncoderFactory* encoderFactory = [[VideoEncoderFactory alloc] init];
+    VideoEncoderFactorySimulcast* simulcastFactory =
+        [[VideoEncoderFactorySimulcast alloc] initWithPrimary:encoderFactory
+                                                     fallback:encoderFactory];
+
+    _peerConnectionFactory =
+        [[RTCPeerConnectionFactory alloc] initWithAudioDeviceModuleType:RTCAudioDeviceModuleTypeAudioEngine
+                                                  bypassVoiceProcessing:bypassVoiceProcessing
+                                                         encoderFactory:simulcastFactory
+                                                         decoderFactory:decoderFactory
+                                                  audioProcessingModule:_audioManager.audioProcessingModule];
+
+    RTCPeerConnectionFactoryOptions* options = [[RTCPeerConnectionFactoryOptions alloc] init];
+    for (NSString* adapter in networkIgnoreMask) {
+      if ([@"adapterTypeEthernet" isEqualToString:adapter]) {
+        options.ignoreEthernetNetworkAdapter = YES;
+      } else if ([@"adapterTypeWifi" isEqualToString:adapter]) {
+        options.ignoreWiFiNetworkAdapter = YES;
+      } else if ([@"adapterTypeCellular" isEqualToString:adapter]) {
+        options.ignoreCellularNetworkAdapter = YES;
+      } else if ([@"adapterTypeVpn" isEqualToString:adapter]) {
+        options.ignoreVPNNetworkAdapter = YES;
+      } else if ([@"adapterTypeLoopback" isEqualToString:adapter]) {
+        options.ignoreLoopbackNetworkAdapter = YES;
+      } else if ([@"adapterTypeAny" isEqualToString:adapter]) {
+        options.ignoreEthernetNetworkAdapter = YES;
+        options.ignoreWiFiNetworkAdapter = YES;
+        options.ignoreCellularNetworkAdapter = YES;
+        options.ignoreVPNNetworkAdapter = YES;
+        options.ignoreLoopbackNetworkAdapter = YES;
+      }
+    }
+    [_peerConnectionFactory setOptions:options];
+
+    _emptyPcFactory = [_peerConnectionFactory copySharedField];
+    [_emptyPcFactory setEmptyAdm];
+    [_emptyPcFactory initWithAudioDeviceModuleType:RTCAudioDeviceModuleTypeAudioEngine
+                             bypassVoiceProcessing:YES
+                                    encoderFactory:simulcastFactory
+                                    decoderFactory:decoderFactory
+                             audioProcessingModule:_audioManager.audioProcessingModule];
+    [_emptyPcFactory setOptions:options];
+  }
+}
+
+#pragma mark - 与 darwin 同名同签名的业务方法(照抄)
+
+- (RTCMediaStream*)streamForId:(NSString*)streamId peerConnectionId:(NSString*)peerConnectionId {
+  RTCMediaStream* stream = nil;
+  if (peerConnectionId.length > 0) {
+    RTCPeerConnection* peerConnection = [_peerConnections objectForKey:peerConnectionId];
+    stream = peerConnection.remoteStreams[streamId];
+  } else {
+    for (RTCPeerConnection* peerConnection in _peerConnections.allValues) {
+      stream = peerConnection.remoteStreams[streamId];
+      if (stream) break;
+    }
+  }
+  if (!stream) {
+    stream = _localStreams[streamId];
+  }
+  return stream;
+}
+
+- (RTCMediaStreamTrack*)trackForId:(NSString*)trackId peerConnectionId:(NSString*)peerConnectionId {
+  id<LocalTrack> track = _localTracks[trackId];
+  RTCMediaStreamTrack* mediaStreamTrack = nil;
+  if (!track) {
+    for (NSString* currentId in _peerConnections.allKeys) {
+      if (peerConnectionId && [currentId isEqualToString:peerConnectionId] == false) continue;
+      RTCPeerConnection* peerConnection = _peerConnections[currentId];
+      mediaStreamTrack = peerConnection.remoteTracks[trackId];
+      if (!mediaStreamTrack) {
+        for (RTCRtpTransceiver* transceiver in peerConnection.transceivers) {
+          if (transceiver.receiver.track != nil &&
+              [transceiver.receiver.track.trackId isEqual:trackId]) {
+            mediaStreamTrack = transceiver.receiver.track;
+            break;
+          }
+        }
+      }
+      if (mediaStreamTrack) break;
+    }
+  } else {
+    mediaStreamTrack = [track track];
+  }
+  return mediaStreamTrack;
+}
+
+- (RTCRtpSender*)getRtpSenderById:(RTCPeerConnection*)peerConnection Id:(NSString*)Id {
+  for (RTCRtpSender* sender in peerConnection.senders) {
+    if ([sender.senderId isEqualToString:Id]) return sender;
+  }
+  return nil;
+}
+
+- (RTCRtpReceiver*)getRtpReceiverById:(RTCPeerConnection*)peerConnection Id:(NSString*)Id {
+  for (RTCRtpReceiver* receiver in peerConnection.receivers) {
+    if ([receiver.receiverId isEqualToString:Id]) return receiver;
+  }
+  return nil;
+}
+
+- (RTCRtpTransceiver*)getRtpTransceiverById:(RTCPeerConnection*)peerConnection Id:(NSString*)Id {
+  for (RTCRtpTransceiver* transceiver in peerConnection.transceivers) {
+    NSString* mid = transceiver.mid ? transceiver.mid : @"";
+    if ([mid isEqualToString:Id]) return transceiver;
+  }
+  return nil;
+}
+
+- (RTCIceServer*)RTCIceServer:(id)json {
+  if (!json) return nil;
+  if (![json isKindOfClass:[NSDictionary class]]) return nil;
+  NSArray<NSString*>* urls;
+  if ([json[@"url"] isKindOfClass:[NSString class]]) {
+    urls = @[ json[@"url"] ];
+  } else if ([json[@"urls"] isKindOfClass:[NSString class]]) {
+    urls = @[ json[@"urls"] ];
+  } else {
+    urls = (NSArray*)json[@"urls"];
+  }
+  if (json[@"username"] != nil || json[@"credential"] != nil) {
+    return [[RTCIceServer alloc] initWithURLStrings:urls
+                                           username:json[@"username"]
+                                         credential:json[@"credential"]];
+  }
+  return [[RTCIceServer alloc] initWithURLStrings:urls];
+}
+
+- (RTCConfiguration*)RTCConfiguration:(id)json {
+  RTCConfiguration* config = [[RTCConfiguration alloc] init];
+  if (!json || ![json isKindOfClass:[NSDictionary class]]) return config;
+
+  if (json[@"audioJitterBufferMaxPackets"] != nil &&
+      [json[@"audioJitterBufferMaxPackets"] isKindOfClass:[NSNumber class]]) {
+    config.audioJitterBufferMaxPackets = [json[@"audioJitterBufferMaxPackets"] intValue];
+  }
+  if (json[@"bundlePolicy"] != nil && [json[@"bundlePolicy"] isKindOfClass:[NSString class]]) {
+    NSString* bundlePolicy = json[@"bundlePolicy"];
+    if ([bundlePolicy isEqualToString:@"balanced"]) {
+      config.bundlePolicy = RTCBundlePolicyBalanced;
+    } else if ([bundlePolicy isEqualToString:@"max-compat"]) {
+      config.bundlePolicy = RTCBundlePolicyMaxCompat;
+    } else if ([bundlePolicy isEqualToString:@"max-bundle"]) {
+      config.bundlePolicy = RTCBundlePolicyMaxBundle;
+    }
+  }
+  if (json[@"iceBackupCandidatePairPingInterval"] != nil &&
+      [json[@"iceBackupCandidatePairPingInterval"] isKindOfClass:[NSNumber class]]) {
+    config.iceBackupCandidatePairPingInterval =
+        [json[@"iceBackupCandidatePairPingInterval"] intValue];
+  }
+  if (json[@"iceConnectionReceivingTimeout"] != nil &&
+      [json[@"iceConnectionReceivingTimeout"] isKindOfClass:[NSNumber class]]) {
+    config.iceConnectionReceivingTimeout = [json[@"iceConnectionReceivingTimeout"] intValue];
+  }
+  if (json[@"iceServers"] != nil && [json[@"iceServers"] isKindOfClass:[NSArray class]]) {
+    NSMutableArray<RTCIceServer*>* iceServers = [NSMutableArray new];
+    for (id server in json[@"iceServers"]) {
+      RTCIceServer* convert = [self RTCIceServer:server];
+      if (convert != nil) [iceServers addObject:convert];
+    }
+    config.iceServers = iceServers;
+  }
+  if (json[@"iceTransportPolicy"] != nil &&
+      [json[@"iceTransportPolicy"] isKindOfClass:[NSString class]]) {
+    NSString* p = json[@"iceTransportPolicy"];
+    if ([p isEqualToString:@"all"]) {
+      config.iceTransportPolicy = RTCIceTransportPolicyAll;
+    } else if ([p isEqualToString:@"none"]) {
+      config.iceTransportPolicy = RTCIceTransportPolicyNone;
+    } else if ([p isEqualToString:@"nohost"]) {
+      config.iceTransportPolicy = RTCIceTransportPolicyNoHost;
+    } else if ([p isEqualToString:@"relay"]) {
+      config.iceTransportPolicy = RTCIceTransportPolicyRelay;
+    }
+  }
+  if (json[@"rtcpMuxPolicy"] != nil && [json[@"rtcpMuxPolicy"] isKindOfClass:[NSString class]]) {
+    NSString* p = json[@"rtcpMuxPolicy"];
+    if ([p isEqualToString:@"negotiate"]) {
+      config.rtcpMuxPolicy = RTCRtcpMuxPolicyNegotiate;
+    } else if ([p isEqualToString:@"require"]) {
+      config.rtcpMuxPolicy = RTCRtcpMuxPolicyRequire;
+    }
+  }
+  if (json[@"sdpSemantics"] != nil && [json[@"sdpSemantics"] isKindOfClass:[NSString class]]) {
+    NSString* s = json[@"sdpSemantics"];
+    if ([s isEqualToString:@"plan-b"]) {
+      config.sdpSemantics = RTCSdpSemanticsPlanB;
+    } else if ([s isEqualToString:@"unified-plan"]) {
+      config.sdpSemantics = RTCSdpSemanticsUnifiedPlan;
+    }
+  }
+  if (json[@"maxIPv6Networks"] != nil && [json[@"maxIPv6Networks"] isKindOfClass:[NSNumber class]]) {
+    config.maxIPv6Networks = [json[@"maxIPv6Networks"] intValue];
+  }
+  if (json[@"tcpCandidatePolicy"] != nil &&
+      [json[@"tcpCandidatePolicy"] isKindOfClass:[NSString class]]) {
+    NSString* p = json[@"tcpCandidatePolicy"];
+    if ([p isEqualToString:@"enabled"]) {
+      config.tcpCandidatePolicy = RTCTcpCandidatePolicyEnabled;
+    } else if ([p isEqualToString:@"disabled"]) {
+      config.tcpCandidatePolicy = RTCTcpCandidatePolicyDisabled;
+    }
+  }
+  if (json[@"candidateNetworkPolicy"] != nil &&
+      [json[@"candidateNetworkPolicy"] isKindOfClass:[NSString class]]) {
+    NSString* p = json[@"candidateNetworkPolicy"];
+    if ([p isEqualToString:@"all"]) {
+      config.candidateNetworkPolicy = RTCCandidateNetworkPolicyAll;
+    } else if ([p isEqualToString:@"low_cost"]) {
+      config.candidateNetworkPolicy = RTCCandidateNetworkPolicyLowCost;
+    }
+  }
+  if (json[@"keyType"] != nil && [json[@"keyType"] isKindOfClass:[NSString class]]) {
+    NSString* p = json[@"keyType"];
+    if ([p isEqualToString:@"RSA"]) {
+      config.keyType = RTCEncryptionKeyTypeRSA;
+    } else if ([p isEqualToString:@"ECDSA"]) {
+      config.keyType = RTCEncryptionKeyTypeECDSA;
+    }
+  }
+  if (json[@"continualGatheringPolicy"] != nil &&
+      [json[@"continualGatheringPolicy"] isKindOfClass:[NSString class]]) {
+    NSString* p = json[@"continualGatheringPolicy"];
+    if ([p isEqualToString:@"gather_once"]) {
+      config.continualGatheringPolicy = RTCContinualGatheringPolicyGatherOnce;
+    } else if ([p isEqualToString:@"gather_continually"]) {
+      config.continualGatheringPolicy = RTCContinualGatheringPolicyGatherContinually;
+    }
+  }
+  if (json[@"audioJitterBufferFastAccelerate"] != nil &&
+      [json[@"audioJitterBufferFastAccelerate"] isKindOfClass:[NSNumber class]]) {
+    config.audioJitterBufferFastAccelerate =
+        [json[@"audioJitterBufferFastAccelerate"] boolValue];
+  }
+  if (json[@"pruneTurnPorts"] != nil && [json[@"pruneTurnPorts"] isKindOfClass:[NSNumber class]]) {
+    config.shouldPruneTurnPorts = [json[@"pruneTurnPorts"] boolValue];
+  }
+  if (json[@"presumeWritableWhenFullyRelayed"] != nil &&
+      [json[@"presumeWritableWhenFullyRelayed"] isKindOfClass:[NSNumber class]]) {
+    config.shouldPresumeWritableWhenFullyRelayed =
+        [json[@"presumeWritableWhenFullyRelayed"] boolValue];
+  }
+  if (json[@"cryptoOptions"] != nil &&
+      [json[@"cryptoOptions"] isKindOfClass:[NSDictionary class]]) {
+    id options = json[@"cryptoOptions"];
+    BOOL srtpEnableGcmCryptoSuites = NO;
+    BOOL sframeRequireFrameEncryption = NO;
+    BOOL srtpEnableEncryptedRtpHeaderExtensions = NO;
+    BOOL srtpEnableAes128Sha1_32CryptoCipher = NO;
+    if ([options[@"enableGcmCryptoSuites"] isKindOfClass:[NSNumber class]])
+      srtpEnableGcmCryptoSuites = [options[@"enableGcmCryptoSuites"] boolValue];
+    if ([options[@"requireFrameEncryption"] isKindOfClass:[NSNumber class]])
+      sframeRequireFrameEncryption = [options[@"requireFrameEncryption"] boolValue];
+    if ([options[@"enableEncryptedRtpHeaderExtensions"] isKindOfClass:[NSNumber class]])
+      srtpEnableEncryptedRtpHeaderExtensions =
+          [options[@"enableEncryptedRtpHeaderExtensions"] boolValue];
+    if ([options[@"enableAes128Sha1_32CryptoCipher"] isKindOfClass:[NSNumber class]])
+      srtpEnableAes128Sha1_32CryptoCipher =
+          [options[@"enableAes128Sha1_32CryptoCipher"] boolValue];
+    config.cryptoOptions = [[RTCCryptoOptions alloc]
+             initWithSrtpEnableGcmCryptoSuites:srtpEnableGcmCryptoSuites
+           srtpEnableAes128Sha1_32CryptoCipher:srtpEnableAes128Sha1_32CryptoCipher
+        srtpEnableEncryptedRtpHeaderExtensions:srtpEnableEncryptedRtpHeaderExtensions
+                  sframeRequireFrameEncryption:sframeRequireFrameEncryption];
+  }
+  return config;
+}
+
+- (NSString*)streamTrackStateToString:(RTCMediaStreamTrackState)state {
+  switch (state) {
+    case RTCMediaStreamTrackStateLive:
+      return @"live";
+    case RTCMediaStreamTrackStateEnded:
+      return @"ended";
+  }
+  return @"";
+}
+
+- (NSDictionary*)mediaStreamToMap:(RTCMediaStream*)stream ownerTag:(NSString*)ownerTag {
+  NSMutableArray* audioTracks = [NSMutableArray array];
+  NSMutableArray* videoTracks = [NSMutableArray array];
+  for (RTCMediaStreamTrack* track in stream.audioTracks) {
+    [audioTracks addObject:[self mediaTrackToMap:track]];
+  }
+  for (RTCMediaStreamTrack* track in stream.videoTracks) {
+    [videoTracks addObject:[self mediaTrackToMap:track]];
+  }
+  return @{
+    @"streamId" : stream.streamId,
+    @"ownerTag" : ownerTag,
+    @"audioTracks" : audioTracks,
+    @"videoTracks" : videoTracks,
+  };
+}
+
+- (NSDictionary*)mediaTrackToMap:(RTCMediaStreamTrack*)track {
+  if (track == nil) return @{};
+  return @{
+    @"enabled" : @(track.isEnabled),
+    @"id" : track.trackId,
+    @"kind" : track.kind,
+    @"label" : track.trackId,
+    @"readyState" : [self streamTrackStateToString:track.readyState],
+    @"remote" : @(YES)
+  };
+}
+
+- (NSDictionary*)dtmfSenderToMap:(id<RTCDtmfSender>)dtmf Id:(NSString*)Id {
+  return @{
+    @"dtmfSenderId" : Id,
+    @"interToneGap" : @(dtmf.interToneGap / 1000.0),
+    @"duration" : @(dtmf.duration / 1000.0),
+  };
+}
+
+- (NSDictionary*)rtpParametersToMap:(RTCRtpParameters*)parameters {
+  NSDictionary* rtcp = @{
+    @"cname" : parameters.rtcp.cname,
+    @"reducedSize" : @(parameters.rtcp.isReducedSize),
+  };
+  NSMutableArray* headerExtensions = [NSMutableArray array];
+  for (RTCRtpHeaderExtension* headerExtension in parameters.headerExtensions) {
+    [headerExtensions addObject:@{
+      @"uri" : headerExtension.uri,
+      @"encrypted" : @(headerExtension.encrypted),
+      @"id" : @(headerExtension.id),
+    }];
+  }
+  NSMutableArray* encodings = [NSMutableArray array];
+  for (RTCRtpEncodingParameters* encoding in parameters.encodings) {
+    NSMutableDictionary* obj = [@{@"active" : @(encoding.isActive)} mutableCopy];
+    if (encoding.rid != nil) [obj setObject:encoding.rid forKey:@"rid"];
+    if (encoding.minBitrateBps != nil) [obj setObject:encoding.minBitrateBps forKey:@"minBitrate"];
+    if (encoding.maxBitrateBps != nil) [obj setObject:encoding.maxBitrateBps forKey:@"maxBitrate"];
+    if (encoding.maxFramerate != nil) [obj setObject:encoding.maxFramerate forKey:@"maxFramerate"];
+    if (encoding.numTemporalLayers != nil)
+      [obj setObject:encoding.numTemporalLayers forKey:@"numTemporalLayers"];
+    if (encoding.scaleResolutionDownBy != nil)
+      [obj setObject:encoding.scaleResolutionDownBy forKey:@"scaleResolutionDownBy"];
+    if (encoding.ssrc != nil) [obj setObject:encoding.ssrc forKey:@"ssrc"];
+    [encodings addObject:obj];
+  }
+  NSMutableArray* codecs = [NSMutableArray array];
+  for (RTCRtpCodecParameters* codec in parameters.codecs) {
+    [codecs addObject:@{
+      @"name" : codec.name,
+      @"payloadType" : @(codec.payloadType),
+      @"clockRate" : codec.clockRate,
+      @"numChannels" : codec.numChannels ? codec.numChannels : @(1),
+      @"parameters" : codec.parameters,
+      @"kind" : codec.kind
+    }];
+  }
+  NSString* degradationPreference = @"balanced";
+  if (parameters.degradationPreference != nil) {
+    if ([parameters.degradationPreference intValue] == RTCDegradationPreferenceMaintainFramerate) {
+      degradationPreference = @"maintain-framerate";
+    } else if ([parameters.degradationPreference intValue] ==
+               RTCDegradationPreferenceMaintainResolution) {
+      degradationPreference = @"maintain-resolution";
+    } else if ([parameters.degradationPreference intValue] == RTCDegradationPreferenceBalanced) {
+      degradationPreference = @"balanced";
+    } else if ([parameters.degradationPreference intValue] == RTCDegradationPreferenceDisabled) {
+      degradationPreference = @"disabled";
+    }
+  }
+  return @{
+    @"transactionId" : parameters.transactionId,
+    @"rtcp" : rtcp,
+    @"headerExtensions" : headerExtensions,
+    @"encodings" : encodings,
+    @"codecs" : codecs,
+    @"degradationPreference" : degradationPreference,
+  };
+}
+
+- (RTCRtpParameters*)updateRtpParameters:(RTCRtpParameters*)parameters
+                                    with:(NSDictionary*)newParameters {
+  NSArray<RTCRtpEncodingParameters*>* currentEncodings = parameters.encodings;
+  NSArray* newEncodings = [newParameters objectForKey:@"encodings"];
+  NSString* degradationPreference = [newParameters objectForKey:@"degradationPreference"];
+  if (degradationPreference != nil) {
+    if ([degradationPreference isEqualToString:@"maintain-framerate"]) {
+      parameters.degradationPreference =
+          [NSNumber numberWithInt:RTCDegradationPreferenceMaintainFramerate];
+    } else if ([degradationPreference isEqualToString:@"maintain-resolution"]) {
+      parameters.degradationPreference =
+          [NSNumber numberWithInt:RTCDegradationPreferenceMaintainResolution];
+    } else if ([degradationPreference isEqualToString:@"balanced"]) {
+      parameters.degradationPreference = [NSNumber numberWithInt:RTCDegradationPreferenceBalanced];
+    } else if ([degradationPreference isEqualToString:@"disabled"]) {
+      parameters.degradationPreference = [NSNumber numberWithInt:RTCDegradationPreferenceDisabled];
+    }
+  }
+  for (int i = 0; i < [newEncodings count]; i++) {
+    RTCRtpEncodingParameters* currentParams = nil;
+    NSDictionary* newParams = [newEncodings objectAtIndex:i];
+    NSString* rid = [newParams objectForKey:@"rid"];
+    if ([rid isKindOfClass:[NSString class]] && [rid length] != 0) {
+      NSUInteger result =
+          [currentEncodings indexOfObjectPassingTest:^BOOL(RTCRtpEncodingParameters* _Nonnull obj,
+                                                           NSUInteger idx,
+                                                           BOOL* _Nonnull stop) {
+            return (*stop = ([rid isEqualToString:obj.rid]));
+          }];
+      if (result != NSNotFound) currentParams = [currentEncodings objectAtIndex:result];
+    }
+    if (currentParams == nil && i < [currentEncodings count]) {
+      currentParams = [currentEncodings objectAtIndex:i];
+    }
+    if (currentParams != nil) {
+      NSNumber* active = [newParams objectForKey:@"active"];
+      if (active != nil) currentParams.isActive = [active boolValue];
+      NSNumber* maxBitrate = [newParams objectForKey:@"maxBitrate"];
+      if (maxBitrate != nil) currentParams.maxBitrateBps = maxBitrate;
+      NSNumber* minBitrate = [newParams objectForKey:@"minBitrate"];
+      if (minBitrate != nil) currentParams.minBitrateBps = minBitrate;
+      NSNumber* maxFramerate = [newParams objectForKey:@"maxFramerate"];
+      if (maxFramerate != nil) currentParams.maxFramerate = maxFramerate;
+      NSNumber* numTemporalLayers = [newParams objectForKey:@"numTemporalLayers"];
+      if (numTemporalLayers != nil) currentParams.numTemporalLayers = numTemporalLayers;
+      NSNumber* scaleResolutionDownBy = [newParams objectForKey:@"scaleResolutionDownBy"];
+      if (scaleResolutionDownBy != nil) currentParams.scaleResolutionDownBy = scaleResolutionDownBy;
+    }
+  }
+  return parameters;
+}
+
+- (NSDictionary*)rtpSenderToMap:(RTCRtpSender*)sender {
+  return @{
+    @"senderId" : sender.senderId,
+    @"ownsTrack" : @(YES),
+    @"rtpParameters" : [self rtpParametersToMap:sender.parameters],
+    @"track" : [self mediaTrackToMap:sender.track],
+    @"dtmfSender" : [self dtmfSenderToMap:sender.dtmfSender Id:sender.senderId]
+  };
+}
+
+- (NSDictionary*)receiverToMap:(RTCRtpReceiver*)receiver {
+  return @{
+    @"receiverId" : receiver.receiverId,
+    @"rtpParameters" : [self rtpParametersToMap:receiver.parameters],
+    @"track" : [self mediaTrackToMap:receiver.track],
+  };
+}
+
+- (NSString*)transceiverDirectionString:(RTCRtpTransceiverDirection)direction {
+  switch (direction) {
+    case RTCRtpTransceiverDirectionSendRecv:
+      return @"sendrecv";
+    case RTCRtpTransceiverDirectionSendOnly:
+      return @"sendonly";
+    case RTCRtpTransceiverDirectionRecvOnly:
+      return @"recvonly";
+    case RTCRtpTransceiverDirectionInactive:
+      return @"inactive";
+    case RTCRtpTransceiverDirectionStopped:
+      return @"stopped";
+  }
+  return nil;
+}
+
+- (NSDictionary*)transceiverToMap:(RTCRtpTransceiver*)transceiver {
+  NSString* mid = transceiver.mid ? transceiver.mid : @"";
+  return @{
+    @"transceiverId" : mid,
+    @"mid" : mid,
+    @"direction" : [self transceiverDirectionString:transceiver.direction],
+    @"sender" : [self rtpSenderToMap:transceiver.sender],
+    @"receiver" : [self receiverToMap:transceiver.receiver]
+  };
+}
+
+#pragma mark - createPeerConnection(照抄 darwin handleMethodCall)
+
+- (void)createPeerConnection:(NSDictionary*)configuration
+                 constraints:(NSDictionary*)constraints
+                    eventCb:(webrtc_event_cb)eventCb
+                    userData:(void*)userData
+                      result:(WebrtcResult)result {
+  BOOL isSysAudio = [configuration[@"isSysAudio"] boolValue];
+  if (![configuration[@"isSysAudio"] isKindOfClass:[NSNumber class]]) {
+    isSysAudio = NO;
+  }
+  RTCPeerConnectionFactory* factory =
+      isSysAudio ? self.emptyPcFactory : self.peerConnectionFactory;
+  RTCPeerConnection* peerConnection =
+      [factory peerConnectionWithConfiguration:[self RTCConfiguration:configuration]
+                                   constraints:[self parseMediaConstraints:constraints]
+                                      delegate:self];
+
+  peerConnection.remoteStreams = [NSMutableDictionary new];
+  peerConnection.remoteTracks = [NSMutableDictionary new];
+  peerConnection.dataChannels = [NSMutableDictionary new];
+
+  NSString* peerConnectionId = [[NSUUID UUID] UUIDString];
+  peerConnection.flutterId = peerConnectionId;
+
+  WebrtcEventCallback* cb = [WebrtcEventCallback new];
+  cb.cb = eventCb;
+  cb.userData = userData;
+  peerConnection.webrtcEventCallback = cb;
+
+  self.peerConnections[peerConnectionId] = peerConnection;
+  result(@{@"peerConnectionId" : peerConnectionId});
+}
+
+- (RTCPeerConnection*)peerConnectionForId:(NSString*)peerConnectionId {
+  return self.peerConnections[peerConnectionId];
+}
+
+- (void)registerPeerConnection:(RTCPeerConnection*)pc
+                        forId:(NSString*)peerConnectionId
+                       eventCb:(webrtc_event_cb)eventCb
+                       userData:(void*)userData {
+  pc.flutterId = peerConnectionId;
+  WebrtcEventCallback* cb = [WebrtcEventCallback new];
+  cb.cb = eventCb;
+  cb.userData = userData;
+  pc.webrtcEventCallback = cb;
+  if (peerConnectionId) self.peerConnections[peerConnectionId] = pc;
+}
+
+#pragma mark - RTCPeerConnectionDelegate(事件转发到 C ABI)
+
+- (void)peerConnection:(RTCPeerConnection*)peerConnection
+    didChangeSignalingState:(RTCSignalingState)stateChanged {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onSignalingStateChange",
+    @"state" : [self stringForSignalingState:stateChanged],
+  }];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection didAddStream:(RTCMediaStream*)stream {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onAddStream",
+    @"streamId" : stream.streamId,
+  }];
+  if (stream.videoTracks.count > 0) {
+    // 简化: webrtc-cli 使用 onTrack 为主, onAddStream 仅透传 streamId
+  }
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection didRemoveStream:(RTCMediaStream*)stream {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onRemoveStream",
+    @"streamId" : stream.streamId,
+  }];
+}
+- (void)peerConnectionShouldNegotiate:(RTCPeerConnection*)peerConnection {
+  [peerConnection.webrtcEventCallback post:@{@"event" : @"onRenegotiationNeeded"}];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection
+    didChangeIceConnectionState:(RTCIceConnectionState)newState {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onIceConnectionStateChange",
+    @"state" : [self stringForICEConnectionState:newState],
+  }];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection
+    didChangeIceGatheringState:(RTCIceGatheringState)newState {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onIceGatheringStateChange",
+    @"state" : [self stringForICEGatheringState:newState],
+  }];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection
+    didGenerateIceCandidate:(RTCIceCandidate*)candidate {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onIceCandidate",
+    @"candidate" : @{
+      @"candidate" : candidate.sdp,
+      @"sdpMid" : candidate.sdpMid,
+      @"sdpMLineIndex" : @(candidate.sdpMLineIndex),
+    },
+  }];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection
+    didRemoveIceCandidates:(NSArray<RTCIceCandidate*>*)candidates {
+  NSMutableArray* arr = [NSMutableArray array];
+  for (RTCIceCandidate* c in candidates) {
+    [arr addObject:@{
+      @"candidate" : c.sdp,
+      @"sdpMid" : c.sdpMid,
+      @"sdpMLineIndex" : @(c.sdpMLineIndex),
+    }];
+  }
+  [peerConnection.webrtcEventCallback post:@{@"event" : @"onIceCandidateRemoved", @"candidates" : arr}];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection
+    didOpenDataChannel:(RTCDataChannel*)dataChannel {
+  NSString* dataChannelId = [NSString stringWithFormat:@"%@_%@", dataChannel.peerConnectionId,
+                                                           dataChannel.label];
+  NSDictionary* dataChannelEvent = @{
+    @"event" : @"didOpenDataChannel",
+    @"id" : dataChannel.channelId >= 0 ? @(dataChannel.channelId) : [NSNull null],
+    @"label" : dataChannel.label,
+    @"ordered" : @(dataChannel.isOrdered),
+    @"protocol" : dataChannel.protocol ? dataChannel.protocol : @"",
+    @"flutterId" : dataChannel.flutterChannelId ? dataChannel.flutterChannelId : (id)[NSNull null],
+  };
+  [peerConnection.webrtcEventCallback post:dataChannelEvent];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection didChangeConnectionState:(RTCPeerConnectionState)newState {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onConnectionStateChange",
+    @"state" : [self stringForPeerConnectionState:newState],
+  }];
+}
+- (void)peerConnection:(RTCPeerConnection*)peerConnection
+    didAddReceiver:(RTCRtpReceiver*)rtpReceiver
+           streams:(NSArray<RTCMediaStream*>*)mediaStreams {
+  [peerConnection.webrtcEventCallback post:@{
+    @"event" : @"onTrack",
+    @"track" : [self mediaTrackToMap:rtpReceiver.track],
+    @"receiver" : [self receiverToMap:rtpReceiver],
+    @"streams" : @[
+      @{@"streamId" : mediaStreams.firstObject.streamId ?: @""}
+    ],
+  }];
+}
+
+@end
+
+#pragma mark - C ABI 入口层(extern "C")
+
+// 顶层 webrtc.h 的 38 个 webrtc_* 符号, 与 win/linux C ABI 同名同签名, dart 零改动。
+// mac 实现 = 照抄 darwin ObjC 业务方法 + 把 FlutterResult/FlutterEventSink 换成 C 回调。
+
+extern "C" {
+
+#include <string.h>
+#include <stdlib.h>
+
+static WebrtcPlugin* WebrtcPluginSingleton(void) {
+  WebrtcPlugin* p = [WebrtcPlugin sharedInstance];
+  if (!p.peerConnectionFactory) [p initializeFactory];
+  return p;
+}
+
+webrtc_handle webrtc_factory_create(void) {
+  return (__bridge void*)WebrtcPluginSingleton();
+}
+
+void webrtc_factory_destroy(webrtc_handle factory) {
+  // 单例常驻
+}
+
+webrtc_handle webrtc_create_peer_connection(webrtc_handle factory,
+                                            const char* configuration_json,
+                                            const char* constraints_json,
+                                            webrtc_event_cb on_event,
+                                            void* user_data) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSDictionary* config = WebrtcParseJson(configuration_json);
+  NSDictionary* constraints = WebrtcParseJson(constraints_json);
+  __block RTCPeerConnection* created = nil;
+  [p createPeerConnection:config ?: @{}
+              constraints:constraints ?: @{}
+                 eventCb:on_event
+                 userData:user_data
+                   result:^(id r) {
+                     if (![r isKindOfClass:[WebrtcError class]] && r[@"peerConnectionId"]) {
+                       created = p.peerConnections[r[@"peerConnectionId"]];
+                     }
+                   }];
+  return (__bridge void*)created;
+}
+
+void webrtc_pc_destroy(webrtc_handle pc) {
+  if (!pc) return;
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  [plugin.peerConnections removeObjectForKey:p.flutterId];
+}
+
+char* webrtc_get_user_media(webrtc_handle factory, const char* media_constraints_json) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSDictionary* c = WebrtcParseJson(media_constraints_json);
+  // getUserMedia 需 TCC 权限 + 采集启动, 完成回调异步派发到主队列; 同步等待其完成
+  __block NSDictionary* out = nil;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  [p getUserMedia:c ?: @{} result:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+    dispatch_semaphore_signal(sem);
+  }];
+  dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+void webrtc_stream_dispose(webrtc_handle factory, const char* stream_id) {
+  if (!stream_id) return;
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  [p.localStreams removeObjectForKey:WebrtcCString(stream_id)];
+}
+
+char* webrtc_factory_get_rtp_sender_capabilities(webrtc_handle factory, const char* kind) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSDictionary* args = @{@"kind" : WebrtcCString(kind) ?: @""};
+  __block NSDictionary* out = nil;
+  [p peerConnectionGetRtpSenderCapabilities:args result:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_factory_get_rtp_receiver_capabilities(webrtc_handle factory, const char* kind) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSDictionary* args = @{@"kind" : WebrtcCString(kind) ?: @""};
+  __block NSDictionary* out = nil;
+  [p peerConnectionGetRtpReceiverCapabilities:args result:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_get_sources(webrtc_handle factory) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  __block NSDictionary* out = nil;
+  [p getSources:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+int webrtc_select_audio_input(webrtc_handle factory, const char* device_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  __block int ok = 0;
+  [p selectAudioInput:WebrtcCString(device_id) result:^(id r) {
+    ok = [r isKindOfClass:[WebrtcError class]] ? 0 : 1;
+  }];
+  return ok;
+}
+
+char* webrtc_create_local_media_stream(webrtc_handle factory) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  __block NSDictionary* out = nil;
+  [p createLocalMediaStream:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_media_stream_get_tracks(webrtc_handle factory, const char* stream_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  __block NSDictionary* out = nil;
+  [p mediaStreamGetTracks:WebrtcCString(stream_id) result:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+void webrtc_media_stream_dispose(webrtc_handle factory, const char* stream_id) {
+  if (!stream_id) return;
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSString* sid = WebrtcCString(stream_id);
+  [p.localStreams removeObjectForKey:sid];
+}
+
+void webrtc_media_stream_track_dispose(webrtc_handle factory, const char* track_id) {
+  if (!track_id) return;
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSString* tid = WebrtcCString(track_id);
+  id<LocalTrack> track = p.localTracks[tid];
+  if ([track respondsToSelector:@selector(stop)]) [track stop];
+  [p.localTracks removeObjectForKey:tid];
+}
+
+int webrtc_media_stream_add_track(webrtc_handle factory, const char* stream_id,
+                                  const char* track_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  RTCMediaStream* stream = p.localStreams[WebrtcCString(stream_id)];
+  RTCMediaStreamTrack* track = [p trackForId:WebrtcCString(track_id) peerConnectionId:nil];
+  if (!stream || !track) return 0;
+  if ([track isKindOfClass:[RTCAudioTrack class]]) {
+    [stream addAudioTrack:(RTCAudioTrack*)track];
+  } else if ([track isKindOfClass:[RTCVideoTrack class]]) {
+    [stream addVideoTrack:(RTCVideoTrack*)track];
+  }
+  return 1;
+}
+
+int webrtc_media_stream_remove_track(webrtc_handle factory, const char* stream_id,
+                                     const char* track_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  RTCMediaStream* stream = p.localStreams[WebrtcCString(stream_id)];
+  if (!stream) return 0;
+  RTCMediaStreamTrack* track = [p trackForId:WebrtcCString(track_id) peerConnectionId:nil];
+  if (!track) return 0;
+  if ([track isKindOfClass:[RTCAudioTrack class]]) {
+    [stream removeAudioTrack:(RTCAudioTrack*)track];
+  } else if ([track isKindOfClass:[RTCVideoTrack class]]) {
+    [stream removeVideoTrack:(RTCVideoTrack*)track];
+  }
+  return 1;
+}
+
+void webrtc_pc_close(webrtc_handle pc) {
+  if (!pc) return;
+  [(__bridge RTCPeerConnection*)pc close];
+}
+
+void webrtc_pc_create_answer(webrtc_handle pc, const char* constraints_json,
+                             webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  [plugin peerConnectionCreateAnswer:WebrtcParseJson(constraints_json) ?: @{}
+                      peerConnection:p
+                              result:WebrtcResultMake(user_data, cb)];
+}
+
+void webrtc_pc_set_local_description(webrtc_handle pc, const char* sdp, const char* type,
+                                     webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCSdpType sdpType = [RTCSessionDescription typeForString:WebrtcCString(type)];
+  RTCSessionDescription* desc =
+      [[RTCSessionDescription alloc] initWithType:sdpType sdp:WebrtcCString(sdp)];
+  [plugin peerConnectionSetLocalDescription:desc
+                             peerConnection:p
+                                     result:WebrtcResultMake(user_data, cb)];
+}
+
+void webrtc_pc_set_remote_description(webrtc_handle pc, const char* sdp, const char* type,
+                                      webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCSdpType sdpType = [RTCSessionDescription typeForString:WebrtcCString(type)];
+  RTCSessionDescription* desc =
+      [[RTCSessionDescription alloc] initWithType:sdpType sdp:WebrtcCString(sdp)];
+  [plugin peerConnectionSetRemoteDescription:desc
+                              peerConnection:p
+                                      result:WebrtcResultMake(user_data, cb)];
+}
+
+int webrtc_pc_add_ice_candidate(webrtc_handle pc, const char* candidate_json) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  NSDictionary* j = WebrtcParseJson(candidate_json);
+  if (!j) return 0;
+  RTCIceCandidate* candidate =
+      [[RTCIceCandidate alloc] initWithSdp:j[@"candidate"]
+                                     sdpMLineIndex:[j[@"sdpMLineIndex"] intValue]
+                                    sdpMid:j[@"sdpMid"]];
+  __block int ok = 0;
+  [plugin peerConnectionAddICECandidate:candidate
+                         peerConnection:p
+                                 result:^(id r) {
+                                   ok = [r isKindOfClass:[WebrtcError class]] ? 0 : 1;
+                                 }];
+  return ok;
+}
+
+char* webrtc_pc_add_track(webrtc_handle pc, const char* track_id, const char* stream_id) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCMediaStreamTrack* track = [plugin trackForId:WebrtcCString(track_id) peerConnectionId:nil];
+  NSArray* streamIds = stream_id ? @[ WebrtcCString(stream_id) ] : @[];
+  RTCRtpSender* sender = [p addTrack:track streamIds:streamIds];
+  if (!sender) return NULL;
+  NSDictionary* out = [plugin rtpSenderToMap:sender];
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_remove_track(webrtc_handle pc, const char* sender_id) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCRtpSender* sender = [plugin getRtpSenderById:p Id:WebrtcCString(sender_id)];
+  BOOL ok = sender ? [p removeTrack:sender] : NO;
+  NSDictionary* out = @{@"result" : @(ok)};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_get_senders(webrtc_handle pc) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  NSMutableArray* senders = [NSMutableArray array];
+  for (RTCRtpSender* sender in p.senders) {
+    [senders addObject:[plugin rtpSenderToMap:sender]];
+  }
+  NSDictionary* out = @{@"senders" : senders};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_get_transceivers(webrtc_handle pc) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  NSMutableArray* transceivers = [NSMutableArray array];
+  for (RTCRtpTransceiver* transceiver in p.transceivers) {
+    [transceivers addObject:[plugin transceiverToMap:transceiver]];
+  }
+  NSDictionary* out = @{@"transceivers" : transceivers};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_sender_set_parameters(webrtc_handle pc, const char* sender_id,
+                                      const char* params_json) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCRtpSender* sender = [plugin getRtpSenderById:p Id:WebrtcCString(sender_id)];
+  NSDictionary* params = WebrtcParseJson(params_json);
+  BOOL ok = NO;
+  if (sender && params) {
+    [sender setParameters:[plugin updateRtpParameters:sender.parameters with:params]];
+    ok = YES;
+  }
+  NSDictionary* out = @{@"result" : @(ok)};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+void webrtc_pc_transceiver_set_codec_preferences(webrtc_handle pc, const char* transceiver_id,
+                                                 const char* codecs_json) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  NSDictionary* args = @{
+    @"peerConnectionId" : p.flutterId ?: @"",
+    @"transceiverId" : WebrtcCString(transceiver_id) ?: @"",
+    @"codecs" : [NSJSONSerialization JSONObjectWithData:
+                              [NSData dataWithBytes:codecs_json length:strlen(codecs_json ?: "")]
+                                              options:0 error:nil] ?: @[],
+  };
+  [plugin transceiverSetCodecPreferences:args result:^(id r){}];
+}
+
+void webrtc_pc_get_stats(webrtc_handle pc, const char* track_id,
+                         webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  if (track_id && track_id[0]) {
+    [plugin peerConnectionGetStatsForTrackId:WebrtcCString(track_id)
+                              peerConnection:p
+                                      result:WebrtcResultMake(user_data, cb)];
+  } else {
+    [plugin peerConnectionGetStats:p result:WebrtcResultMake(user_data, cb)];
+  }
+}
+
+char* webrtc_get_sys_audio_media(webrtc_handle factory, const char* params_json) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSDictionary* params = WebrtcParseJson(params_json) ?: @{};
+  NSError* error = nil;
+  NSMutableDictionary* out = [[SysAudioTrackManager sharedInstance]
+      getSysAudioMediaWithPlugin:p
+                        deviceId:params[@"deviceId"]
+                        streamId:params[@"streamId"]
+              enablePcmRecording:[params[@"enablePcmRecording"] boolValue]
+                     pcmFilePath:params[@"pcmFilePath"]
+                           error:&error];
+  if (!out) return NULL;
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+void webrtc_release_sys_audio_media(webrtc_handle factory, const char* stream_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  [[SysAudioTrackManager sharedInstance] releaseSysAudioMediaWithPlugin:p
+                                                               streamId:WebrtcCString(stream_id)];
+}
+
+int webrtc_enable_sys_audio_pcm_recording(webrtc_handle factory, int enable,
+                                          const char* file_path) {
+  SysAudioTrackManager* m = [SysAudioTrackManager sharedInstance];
+  m.enablePcmRecording = (enable != 0);
+  m.pcmFilePath = WebrtcCString(file_path);
+  return 1;
+}
+
+char* webrtc_get_desktop_sources(webrtc_handle factory, const char* types_json) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSArray* types = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:types_json
+                                                                        length:strlen(types_json ?: "")]
+                                                   options:0 error:nil];
+  if (![types isKindOfClass:[NSArray class]]) types = @[];
+  __block NSDictionary* out = nil;
+  [p getDesktopSources:@{@"types" : types} result:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_get_display_media(webrtc_handle factory, const char* constraints_json) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSDictionary* c = WebrtcParseJson(constraints_json) ?: @{};
+  __block NSDictionary* out = nil;
+  [p getDisplayMedia:c result:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_create_data_channel(webrtc_handle pc, const char* label, const char* init_json) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  NSDictionary* j = WebrtcParseJson(init_json) ?: @{};
+  RTCDataChannelConfiguration* config = [RTCDataChannelConfiguration new];
+  if (j[@"id"]) config.channelId = [j[@"id"] intValue];
+  if (j[@"ordered"]) config.isOrdered = [j[@"ordered"] boolValue];
+  if (j[@"maxRetransmits"]) config.maxRetransmits = [j[@"maxRetransmits"] intValue];
+  if (j[@"negotiated"]) config.isNegotiated = [j[@"negotiated"] boolValue];
+  if (j[@"protocol"]) config.protocol = j[@"protocol"];
+  __block NSDictionary* out = nil;
+  [plugin createDataChannel:p.flutterId ?: @""
+                      label:WebrtcCString(label)
+                     config:config
+                    eventCb:NULL
+                   userData:NULL
+                     result:^(id r) {
+                       if (![r isKindOfClass:[WebrtcError class]]) out = r;
+                     }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+int webrtc_data_channel_set_callback(webrtc_handle factory, const char* flutter_id,
+                                     webrtc_event_cb cb, void* user_data) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSString* fid = WebrtcCString(flutter_id);
+  for (RTCPeerConnection* pc in p.peerConnections.allValues) {
+    RTCDataChannel* dc = pc.dataChannels[fid];
+    if (dc) {
+      WebrtcEventCallback* ec = [WebrtcEventCallback new];
+      ec.cb = cb;
+      ec.userData = user_data;
+      dc.webrtcEventCallback = ec;
+      if (dc.eventQueue) {
+        for (id ev in dc.eventQueue) [ec post:ev];
+        dc.eventQueue = nil;
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+int webrtc_data_channel_send(webrtc_handle factory, const char* flutter_id, int is_binary,
+                             const uint8_t* data, int len) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSString* fid = WebrtcCString(flutter_id);
+  for (RTCPeerConnection* pc in p.peerConnections.allValues) {
+    RTCDataChannel* dc = pc.dataChannels[fid];
+    if (dc) {
+      NSData* payload = [NSData dataWithBytes:data length:len];
+      RTCDataBuffer* buffer = [[RTCDataBuffer alloc] initWithData:payload
+                                                         isBinary:is_binary != 0];
+      return [dc sendData:buffer] ? 1 : 0;
+    }
+  }
+  return 0;
+}
+
+char* webrtc_data_channel_buffered_amount(webrtc_handle factory, const char* flutter_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSString* fid = WebrtcCString(flutter_id);
+  uint64_t amount = 0;
+  for (RTCPeerConnection* pc in p.peerConnections.allValues) {
+    RTCDataChannel* dc = pc.dataChannels[fid];
+    if (dc) {
+      amount = dc.bufferedAmount;
+      break;
+    }
+  }
+  NSDictionary* out = @{@"bufferedAmount" : @(amount)};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+void webrtc_data_channel_close(webrtc_handle factory, const char* flutter_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSString* fid = WebrtcCString(flutter_id);
+  for (RTCPeerConnection* pc in p.peerConnections.allValues) {
+    RTCDataChannel* dc = pc.dataChannels[fid];
+    if (dc) {
+      [dc close];
+      [pc.dataChannels removeObjectForKey:fid];
+      break;
+    }
+  }
+}
+
+void webrtc_free_string(char* s) {
+  if (s) free(s);
+}
+
+} // extern "C"

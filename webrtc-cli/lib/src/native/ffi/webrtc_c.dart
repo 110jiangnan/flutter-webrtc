@@ -8,7 +8,8 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 /// 底层 FFI 绑定 + 事件总线。
-/// 对应 C 头文件 webrtc-c/include/webrtc.h。
+/// 对应 C 头文件 webrtc-c/win_linux/include/webrtc.h (win/linux)，
+/// mac 用同签名的 webrtc-c/mac/include/webrtc.h (dart 零改动, 只换 dylib 路径)。
 ///
 /// 事件(PC 事件 / data channel 消息 / 异步结果)由 C++ signaling 线程触发,
 /// 用 NativeCallable.listener + SendPort 跨线程转到主 isolate 再分发。
@@ -272,17 +273,27 @@ DynamicLibrary _loadLibrary() {
       r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\cmake-build-debug\webrtc_c.dll',
       r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\cmake-build-release\webrtc_c.dll',
     ],
+    if (Platform.isMacOS) ...[
+      'libwebrtc_c.dylib',
+      'build/macos/Build/Products/Debug/webrtc_c/libwebrtc_c.dylib',
+      'macos/runner/libwebrtc_c.dylib',
+    ],
   ];
   for (final path in candidates) {
     try {
-      // 先加载同目录的 libwebrtc.dll(webrtc_c.dll 依赖它, 加载器不搜 DLL 所在目录)
-      _preloadLibwebrtc(_dirOf(path));
+      // Windows: 先加载同目录的 libwebrtc.dll(webrtc_c.dll 依赖它, 加载器不搜 DLL 所在目录)
+      // Mac: dlopen 会自动解析 dylib 同目录依赖, 无需手动 preload
+      if (Platform.isWindows) {
+        _preloadLibwebrtc(_dirOf(path));
+      }
       return DynamicLibrary.open(path);
     } catch (_) {
       // 继续尝试
     }
   }
-  throw StateError('webrtc_c.dll 加载失败, 可用环境变量 WEBRTC_C_LIB 指定路径');
+  throw StateError(
+      Platform.isMacOS ? 'libwebrtc_c.dylib 加载失败' : 'webrtc_c.dll 加载失败'
+      ', 可用环境变量 WEBRTC_C_LIB 指定路径');
 }
 
 String _dirOf(String path) {

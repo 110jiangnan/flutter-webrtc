@@ -153,6 +153,13 @@ char* webrtc_media_stream_get_tracks(webrtc_handle factory,
   return json.empty() ? nullptr : StrDup(json);
 }
 
+void webrtc_stream_dispose(webrtc_handle factory, const char* stream_id) {
+  // 等价 webrtc_media_stream_dispose(见 webrtc.h:110 注释); 该符号在头里声明但此前未实现/未导出。
+  WebrtcBase* base = AsBase(factory);
+  if (!base || !stream_id) return;
+  WebrtcMediaStream(base).MediaStreamDispose(stream_id);
+}
+
 void webrtc_media_stream_dispose(webrtc_handle factory, const char* stream_id) {
   WebrtcBase* base = AsBase(factory);
   if (!base || !stream_id) return;

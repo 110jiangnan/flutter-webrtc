@@ -14,6 +14,9 @@ WebrtcBase::~WebrtcBase() {
   local_streams_.clear();
   local_tracks_.clear();
   video_capturers_.clear();
+  data_channel_observers_.clear();
+  peerconnections_.clear();
+  peerconnection_observers_.clear();
 }
 
 bool WebrtcBase::Initialize() {
@@ -32,15 +35,34 @@ bool WebrtcBase::Initialize() {
 
   audio_device_ = factory_->GetAudioDevice();
   video_device_ = factory_->GetVideoDevice();
-#ifdef RTC_DESKTOP_DEVICE
   desktop_device_ = factory_->GetDesktopDevice();
-#endif
   audio_processing_ = factory_->GetAudioProcessing();
   return true;
 }
 
 std::string WebrtcBase::GenerateUUID() {
   return Helper::CreateRandomUuid().std_string();
+}
+
+RTCPeerConnection* WebrtcBase::PeerConnectionForId(const std::string& id) {
+  auto it = peerconnections_.find(id);
+  return it != peerconnections_.end() ? it->second.get() : nullptr;
+}
+
+void WebrtcBase::RemovePeerConnectionForId(const std::string& id) {
+  auto it = peerconnections_.find(id);
+  if (it != peerconnections_.end()) peerconnections_.erase(it);
+}
+
+CppPcObserver* WebrtcBase::PeerConnectionObserversForId(
+    const std::string& id) {
+  auto it = peerconnection_observers_.find(id);
+  return it != peerconnection_observers_.end() ? it->second : nullptr;
+}
+
+void WebrtcBase::RemovePeerConnectionObserversForId(const std::string& id) {
+  auto it = peerconnection_observers_.find(id);
+  if (it != peerconnection_observers_.end()) peerconnection_observers_.erase(it);
 }
 
 scoped_refptr<RTCMediaStream> WebrtcBase::MediaStreamForId(
@@ -123,6 +145,22 @@ void WebrtcBase::ParseRTCConfiguration(const JNode& map,
   const JNode* ipv6 = map.Get("maxIPv6Networks");
   if (ipv6 && ipv6->type == JNode::kNum)
     conf.max_ipv6_networks = static_cast<int>(ipv6->n);
+}
+
+scoped_refptr<RTCRtpSender> WebrtcBase::GetRtpSenderById(
+    RTCPeerConnection* pc, const std::string& id) {
+  for (auto& item : pc->senders().std_vector()) {
+    if (item->id().std_string() == id) return item;
+  }
+  return nullptr;
+}
+
+scoped_refptr<RTCRtpReceiver> WebrtcBase::GetRtpReceiverById(
+    RTCPeerConnection* pc, const std::string& id) {
+  for (auto& item : pc->receivers().std_vector()) {
+    if (item->id().std_string() == id) return item;
+  }
+  return nullptr;
 }
 
 scoped_refptr<RTCMediaConstraints> WebrtcBase::ParseMediaConstraints(
