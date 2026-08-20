@@ -37,10 +37,10 @@ class MediaStreamTrackFfi extends MediaStreamTrack {
   @override
   bool get enabled => _enabled;
 
-  /// 参考 flutter 原生 mediaStreamTrackSetEnable 也是 NotImplemented,
-  /// C ABI 侧同样未实现, 这里只同步本地状态。
   @override
   set enabled(bool value) {
+    WebrtcC.mediaStreamTrackSetEnable(
+        WebrtcRuntime.instance.factory, trackId, value);
     _enabled = value;
     if (kind == 'audio') {
       _muted = !value;

@@ -18,12 +18,16 @@
 
 /* ---- 事件回调承载: 替代 darwin 的 FlutterEventSink ----
  * 照抄 darwin 里 postEvent(sink, dict) 的语义: 转 JSON、派发主线程、交给 C 函数指针。
+ * 二进制数据通道消息用 post:binary: 直传 NSData 指针, 不走 base64。
  */
 @interface WebrtcEventCallback : NSObject
 @property(nonatomic) webrtc_event_cb cb;
 @property(nonatomic) void* userData;
 /* 把 NSDictionary 事件转 JSON 后回调(替代 postEvent)。主线程派发与 darwin 一致。 */
 - (void)post:(nonnull NSDictionary*)event;
+/* 带二进制附件的版本: binary 非 nil 时直传 NSData.bytes, 不序列化到 JSON 的 data 字段。
+   此时 JSON 的 "data" 字段为空串。 */
+- (void)post:(nonnull NSDictionary*)event binary:(nullable NSData*)binary;
 /* 已是 JSON 字符串时直接回调。 */
 - (void)postString:(nonnull NSString*)json;
 @end

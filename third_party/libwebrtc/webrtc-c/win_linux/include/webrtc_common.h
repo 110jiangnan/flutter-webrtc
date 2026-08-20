@@ -41,7 +41,7 @@ int ConstrainInt(const JNode& obj, const char* key, int def);
 // 跨 DLL 边界返回 malloc 字符串(配合 webrtc_free_string 释放)
 char* StrDup(const std::string& s);
 
-// 二进制数据通道消息在 JSON 事件里用 base64 表示
+// 通用 base64 编码工具(当前数据通道二进制消息已改指针直传, 不再走 base64)
 std::string Base64Encode(const uint8_t* data, size_t len);
 
 }  // namespace webrtc

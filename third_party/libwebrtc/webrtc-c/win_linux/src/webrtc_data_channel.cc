@@ -24,7 +24,11 @@ WebrtcDataChannelObserver::WebrtcDataChannelObserver(
   data_channel_->RegisterObserver(this);
 }
 
-WebrtcDataChannelObserver::~WebrtcDataChannelObserver() {}
+WebrtcDataChannelObserver::~WebrtcDataChannelObserver() {
+  if (data_channel_) {
+    data_channel_->UnregisterObserver();
+  }
+}
 
 void WebrtcDataChannelObserver::SetCallback(webrtc_event_cb cb, void* ud) {
   cb_ = cb;
@@ -38,22 +42,21 @@ void WebrtcDataChannelObserver::OnStateChange(RTCDataChannelState state) {
       {"id", MakeNum(data_channel_->id())},
       {"state", MakeStr(DataStateString(state))},
   }));
-  cb_(ud_, json.c_str());
+  cb_(ud_, json.c_str(), nullptr, 0);
 }
 
 void WebrtcDataChannelObserver::OnMessage(const char* buffer, int length,
                                           bool binary) {
   if (!cb_) return;
-  std::string data =
-      binary ? Base64Encode(reinterpret_cast<const uint8_t*>(buffer), length)
-             : std::string(buffer, length);
   std::string json = ToJson(MakeObj({
       {"event", MakeStr("dataChannelReceiveMessage")},
       {"id", MakeNum(data_channel_->id())},
       {"type", MakeStr(binary ? "binary" : "text")},
-      {"data", MakeStr(data)},
+      {"data", MakeStr(binary ? "" : std::string(buffer, length))},
   }));
-  cb_(ud_, json.c_str());
+  cb_(ud_, json.c_str(),
+      binary ? reinterpret_cast<const uint8_t*>(buffer) : nullptr,
+      binary ? length : 0);
 }
 
 WebrtcDataChannel::WebrtcDataChannel(WebrtcBase* base) : base_(base) {}
@@ -61,8 +64,24 @@ WebrtcDataChannel::WebrtcDataChannel(WebrtcBase* base) : base_(base) {}
 WebrtcDataChannelObserver* WebrtcDataChannel::ObserverForId(
     const char* flutter_id) {
   if (!flutter_id) return nullptr;
+  base_->lock();
   auto it = base_->data_channel_observers_.find(flutter_id);
-  return it != base_->data_channel_observers_.end() ? it->second.get() : nullptr;
+  WebrtcDataChannelObserver* obs =
+      it != base_->data_channel_observers_.end() ? it->second.get() : nullptr;
+  base_->unlock();
+  return obs;
+}
+
+scoped_refptr<RTCDataChannel> WebrtcDataChannel::DataChannelForId(
+    const char* flutter_id) {
+  if (!flutter_id) return nullptr;
+  base_->lock();
+  auto it = base_->data_channel_observers_.find(flutter_id);
+  scoped_refptr<RTCDataChannel> dc =
+      it != base_->data_channel_observers_.end() ? it->second->data_channel()
+                                                 : nullptr;
+  base_->unlock();
+  return dc;
 }
 
 std::string WebrtcDataChannel::Create(webrtc_handle pc, const char* label,
@@ -110,26 +129,33 @@ int WebrtcDataChannel::SetCallback(const char* flutter_id, webrtc_event_cb cb,
 
 int WebrtcDataChannel::Send(const char* flutter_id, int is_binary,
                             const uint8_t* data, int len) {
-  WebrtcDataChannelObserver* observer = ObserverForId(flutter_id);
-  if (!observer || !data || len < 0) return -1;
-  observer->data_channel()->Send(data, static_cast<uint32_t>(len), is_binary != 0);
+  if (!data || len < 0) return -1;
+  scoped_refptr<RTCDataChannel> dc = DataChannelForId(flutter_id);
+  if (!dc) return -1;
+  dc->Send(data, static_cast<uint32_t>(len), is_binary != 0);
   return 0;
 }
 
 std::string WebrtcDataChannel::BufferedAmount(const char* flutter_id) {
-  WebrtcDataChannelObserver* observer = ObserverForId(flutter_id);
-  if (!observer) return "";
+  scoped_refptr<RTCDataChannel> dc = DataChannelForId(flutter_id);
+  if (!dc) return "";
   return ToJson(MakeObj(
-      {{"bufferedAmount", MakeNum(static_cast<double>(observer->data_channel()->buffered_amount()))}}));
+      {{"bufferedAmount",
+        MakeNum(static_cast<double>(dc->buffered_amount()))}}));
 }
 
 void WebrtcDataChannel::Close(const char* flutter_id) {
-  WebrtcDataChannelObserver* observer = ObserverForId(flutter_id);
+  if (!flutter_id) return;
+  std::unique_ptr<WebrtcDataChannelObserver> observer;
+  base_->lock();
+  auto it = base_->data_channel_observers_.find(flutter_id);
+  if (it != base_->data_channel_observers_.end()) {
+    observer = std::move(it->second);
+    base_->data_channel_observers_.erase(it);
+  }
+  base_->unlock();
   if (!observer) return;
   observer->data_channel()->Close();
-  base_->lock();
-  base_->data_channel_observers_.erase(flutter_id);
-  base_->unlock();
 }
 
 }  // namespace webrtc

@@ -59,13 +59,18 @@ class Helper {
     WebrtcC.selectAudioInput(WebrtcRuntime.instance.factory, deviceId);
   }
 
-  // ---- C ABI / PC 不支持, 保留签名抛未实现 ----
-  static Future<void> setVolume(double volume, MediaStreamTrack track) =>
-      throw UnimplementedError('setVolume: C ABI 未实现');
+  /// 选播放设备
+  static Future<void> selectAudioOutput(String deviceId) async {
+    WebrtcC.selectAudioOutput(WebrtcRuntime.instance.factory, deviceId);
+  }
+
+  // ---- 已接通 C ABI ----
+  static Future<void> setVolume(double volume, MediaStreamTrack track) async {
+    WebrtcC.trackSetVolume(WebrtcRuntime.instance.factory, track.id!, volume);
+  }
+  // ---- 仅移动端 / 平台特有无 C ABI, 保留签名抛未实现 ----
   static Future<void> setMicrophoneMute(bool mute, MediaStreamTrack track) =>
       throw UnimplementedError('setMicrophoneMute: C ABI 未实现');
-  static Future<void> selectAudioOutput(String deviceId) =>
-      throw UnimplementedError('selectAudioOutput: 主控播放端用');
   static Future<void> setSpeakerphoneOn(bool enable) =>
       throw UnimplementedError('setSpeakerphoneOn: 仅移动端');
   static Future<void> ensureAudioSession() =>

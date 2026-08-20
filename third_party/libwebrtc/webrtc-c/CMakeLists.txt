@@ -31,6 +31,7 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     win_linux/src/webrtc_peerconnection.cc
     win_linux/src/webrtc_data_channel.cc
     win_linux/src/webrtc_screen_capture.cc
+    win_linux/src/webrtc_frame_cryptor.cc
     win_linux/src/webrtc_sys_audio_manager.cc
     win_linux/src/webrtc_sys_audio_source.cc
     win_linux/src/webrtc_win_sys_audio_capturer.cc

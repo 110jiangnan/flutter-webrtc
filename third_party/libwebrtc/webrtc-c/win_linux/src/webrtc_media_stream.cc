@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "rtc_audio_device.h"
+#include "rtc_audio_track.h"
 #include "rtc_media_track.h"
 #include "rtc_mediaconstraints.h"
 
@@ -31,6 +32,37 @@ static std::string GetSourceIdConstraint(const JNode& media_constraints) {
 
 static std::string GetDeviceIdConstraint(const JNode& media_constraints) {
   return media_constraints.StrOf("deviceId");
+}
+
+// 布尔约束读取: 支持 {"echoCancellation":true} 或 {"echoCancellation":{"ideal":true}}
+static bool ConstrainBool(const JNode& obj, const char* key, bool def) {
+  const JNode* v = obj.Get(key);
+  if (!v) return def;
+  if (v->type == JNode::kBool) return v->b;
+  if (v->type == JNode::kObj) {
+    const JNode* ideal = v->Get("ideal");
+    if (ideal && ideal->type == JNode::kBool) return ideal->b;
+    const JNode* exact = v->Get("exact");
+    if (exact && exact->type == JNode::kBool) return exact->b;
+  }
+  return def;
+}
+
+// 参考 flutter addDefaultAudioConstraints: 默认开回音消除/降噪/自动增益。
+// flutter 把 googNoiseSuppression 等塞进 RTCMediaConstraints, 但 CreateAudioSource
+// 只收 RTCAudioOptions, 等于没生效; 这里直接落 RTCAudioOptions 真正生效。
+static RTCAudioOptions AudioOptionsFromConstraints(const JNode& audio) {
+  RTCAudioOptions options;  // 默认 echo/noise/agc=true, highpass=false
+  if (audio.type != JNode::kObj) return options;
+  options.echo_cancellation =
+      ConstrainBool(audio, "echoCancellation", options.echo_cancellation);
+  options.noise_suppression =
+      ConstrainBool(audio, "noiseSuppression", options.noise_suppression);
+  options.auto_gain_control =
+      ConstrainBool(audio, "autoGainControl", options.auto_gain_control);
+  options.highpass_filter =
+      ConstrainBool(audio, "highpassFilter", options.highpass_filter);
+  return options;
 }
 
 WebrtcMediaStream::WebrtcMediaStream(WebrtcBase* base) : base_(base) {}
@@ -123,8 +155,9 @@ bool WebrtcMediaStream::GetUserAudio(const JNode& audio, RTCMediaStream* stream,
     }
   }
 
-  scoped_refptr<RTCAudioSource> source =
-      base_->factory_->CreateAudioSource("audio_input");
+  RTCAudioOptions audio_options = AudioOptionsFromConstraints(audio);
+  scoped_refptr<RTCAudioSource> source = base_->factory_->CreateAudioSource(
+      "audio_input", RTCAudioSource::SourceType::kMicrophone, audio_options);
   if (!source) return false;
   std::string track_id = base_->GenerateUUID();
   scoped_refptr<RTCAudioTrack> track =
@@ -141,9 +174,12 @@ bool WebrtcMediaStream::GetUserAudio(const JNode& audio, RTCMediaStream* stream,
       {"enabled", MakeBool(track->enabled())},
       {"settings", MakeObj({{"deviceId", MakeStr(sourceId)},
                             {"kind", MakeStr("audioinput")},
-                            {"autoGainControl", MakeBool(true)},
-                            {"echoCancellation", MakeBool(true)},
-                            {"noiseSuppression", MakeBool(true)},
+                            {"autoGainControl",
+                             MakeBool(audio_options.auto_gain_control)},
+                            {"echoCancellation",
+                             MakeBool(audio_options.echo_cancellation)},
+                            {"noiseSuppression",
+                             MakeBool(audio_options.noise_suppression)},
                             {"channelCount", MakeNum(1)},
                             {"latency", MakeNum(0)}})},
   });
@@ -298,6 +334,24 @@ bool WebrtcMediaStream::SelectAudioInput(const std::string& device_id) {
   return false;
 }
 
+bool WebrtcMediaStream::SelectAudioOutput(const std::string& device_id) {
+  scoped_refptr<RTCAudioDevice> audio_device = base_->factory_->GetAudioDevice();
+  if (!audio_device) return false;
+
+  char name[RTCAudioDevice::kAdmMaxDeviceNameSize] = {0};
+  char guid[RTCAudioDevice::kAdmMaxGuidSize] = {0};
+  int16_t playout = audio_device->PlayoutDevices();
+  for (int16_t i = 0; i < playout; ++i) {
+    audio_device->PlayoutDeviceName(i, name, guid);
+    std::string cur = strlen(guid) > 0 ? std::string(guid) : std::string(name);
+    if (!device_id.empty() && device_id == cur) {
+      audio_device->SetPlayoutDevice(i);
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string WebrtcMediaStream::CreateLocalMediaStream() {
   std::string uuid = base_->GenerateUUID();
   scoped_refptr<RTCMediaStream> stream =
@@ -371,6 +425,27 @@ void WebrtcMediaStream::MediaStreamDispose(const std::string& stream_id) {
   base_->RemoveStreamForId(stream_id);
 }
 
+bool WebrtcMediaStream::MediaStreamTrackSetEnable(const std::string& track_id,
+                                                  bool enable) {
+  scoped_refptr<RTCMediaTrack> track = base_->MediaTrackForId(track_id);
+  if (!track) return false;
+  return track->set_enabled(enable);
+}
+
+bool WebrtcMediaStream::MediaStreamTrackSetVolume(const std::string& track_id,
+                                                  double volume) {
+  scoped_refptr<RTCMediaTrack> track = base_->MediaTrackForId(track_id);
+  if (!track) return false;
+  if (track->kind().std_string() != "audio") return false;
+  static_cast<RTCAudioTrack*>(track.get())->SetVolume(volume);
+  return true;
+}
+
+void WebrtcMediaStream::MediaStreamTrackSwitchCamera(
+    const std::string& track_id) {
+  // 移动端专用, 桌面无对应 API(同 flutter NotImplemented)
+}
+
 void WebrtcMediaStream::MediaStreamTrackDispose(const std::string& track_id) {
   for (auto& item : base_->local_streams_) {
     auto stream = item.second;
@@ -421,10 +496,16 @@ bool WebrtcMediaStream::MediaStreamRemoveTrack(const std::string& stream_id,
   return false;
 }
 
-// ================= 主控/非被控录制, 无需实现 =================
-// SelectAudioOutput        — 选播放设备, 主控端(观看/播放方)用
-// MediaStreamTrackSetEnable— 参考 flutter 本身即 NotImplemented()
-// MediaStreamTrackSwitchCamera — 参考 flutter 本身即 NotImplemented(), 移动端用
-// OnDeviceChange           — 采集设备热插拔通知需全局回调面, 后续批次补
+void WebrtcMediaStream::OnDeviceChange() {
+  // 采集设备热插拔: 注册 audio_device 回调, 触发时经 factory 级事件回调投给 dart。
+  scoped_refptr<RTCAudioDevice> audio_device = base_->audio_device_;
+  if (!audio_device) return;
+  audio_device->OnDeviceChange([base = base_]() {
+    if (base->factory_event_cb_) {
+      base->factory_event_cb_(base->factory_event_ud_,
+                              "{\"event\":\"onDeviceChange\"}", nullptr, 0);
+    }
+  });
+}
 
 }  // namespace webrtc

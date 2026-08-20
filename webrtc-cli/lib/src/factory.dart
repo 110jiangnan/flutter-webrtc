@@ -3,13 +3,31 @@ import 'dart:convert';
 import 'package:webrtc_interface/webrtc_interface.dart';
 
 import 'desktop_capturer.dart';
+import 'frame_cryptor.dart';
 import 'media_stream.dart';
 import 'native/ffi/webrtc_c.dart';
 import 'rtc_peerconnection.dart';
 
 /// 镜像 mediadevices_impl.dart 的 MediaDeviceNative。
 class MediaDevicesFfi extends MediaDevices {
-  MediaDevicesFfi._();
+  MediaDevicesFfi._() {
+    // 注册 factory 级事件回调: 设备热插拔 onDeviceChange → 触发 ondevicechange;
+    // 桌源增删/改名 desktopSource* → 路由给 DesktopCapturerFfi。
+    final index = WebrtcC.registerEventHandler((json, binary) {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      final event = map['event'];
+      if (event == 'onDeviceChange') {
+        ondevicechange?.call(null);
+      } else if (event == 'desktopSourceAdded' ||
+          event == 'desktopSourceRemoved' ||
+          event == 'desktopSourceNameChanged') {
+        DesktopCapturerFfi.instance.handleDesktopEvent(event as String, map);
+      } else if (event == 'frameCryptionStateChanged') {
+        routeFrameCryptorEvent(map);
+      }
+    });
+    WebrtcC.factorySetEventCallback(WebrtcRuntime.instance.factory, index);
+  }
   static final MediaDevicesFfi instance = MediaDevicesFfi._();
 
   @override
@@ -58,8 +76,11 @@ class MediaDevicesFfi extends MediaDevices {
 
   @override
   Future<MediaDeviceInfo> selectAudioOutput(
-          [AudioOutputOptions? options]) async =>
-      throw UnimplementedError('selectAudioOutput: 主控播放端用');
+      [AudioOutputOptions? options]) async {
+    final deviceId = options?.deviceId ?? '';
+    WebrtcC.selectAudioOutput(WebrtcRuntime.instance.factory, deviceId);
+    return MediaDeviceInfo(label: 'label', deviceId: deviceId);
+  }
 }
 
 /// 镜像 navigator_impl.dart 的 NavigatorNative。
@@ -154,7 +175,8 @@ class RTCFactoryFfi extends RTCFactory {
   Navigator get navigator => NavigatorFfi.instance;
 
   @override
-  FrameCryptorFactory get frameCryptorFactory => throw UnimplementedError();
+  FrameCryptorFactory get frameCryptorFactory =>
+      FrameCryptorFactoryFfi.instance;
 }
 
 // ================= 顶层入口(镜像 factory_impl.dart, 签名与 flutter_webrtc 一致) =================

@@ -52,7 +52,7 @@ class RTCDataChannelFfi extends RTCDataChannel {
         WebrtcRuntime.instance.factory, flutterId, _eventIndex!);
   }
 
-  void _handleEvent(String json) {
+  void _handleEvent(String json, Uint8List? binary) {
     final map = jsonDecode(json) as Map<String, dynamic>;
     switch (map['event']) {
       case 'dataChannelStateChanged':
@@ -62,10 +62,9 @@ class RTCDataChannelFfi extends RTCDataChannel {
         break;
       case 'dataChannelReceiveMessage':
         final isBinary = map['type'] == 'binary';
-        final data = map['data'] as String;
         final message = isBinary
-            ? RTCDataChannelMessage.fromBinary(base64Decode(data))
-            : RTCDataChannelMessage(data);
+            ? RTCDataChannelMessage.fromBinary(binary ?? Uint8List(0))
+            : RTCDataChannelMessage(map['data'] as String);
         onMessage?.call(message);
         _messageController.add(message);
         break;

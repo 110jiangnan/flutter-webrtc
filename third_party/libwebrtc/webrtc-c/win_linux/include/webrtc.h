@@ -36,9 +36,12 @@ typedef void* webrtc_handle;
  *   {"type":"onIceCandidate","candidate":{"candidate":"...","sdpMid":"0","sdpMLineIndex":0}}
  *   {"type":"onIceConnectionStateChange","state":"connected"}
  *   {"type":"onConnectionStateChange","state":"failed"}
+ * binary/binary_len: 仅 dataChannelReceiveMessage 二进制消息时非 NULL——此时 JSON 无 "data" 字段,
+ * 原始字节由指针直传, Dart 侧在回调内复制。文本消息/状态事件传 NULL/0。
  * user_data 原样回传。
  */
-typedef void (*webrtc_event_cb)(void* user_data, const char* event_json);
+typedef void (*webrtc_event_cb)(void* user_data, const char* event_json,
+                                const uint8_t* binary, int binary_len);
 
 /* 异步结果回调(createAnswer/setDescription/getStats 等):
  * err == 0 成功, json 为结果; err != 0 失败, json 为 nullptr */
@@ -49,6 +52,12 @@ typedef void (*webrtc_result_cb)(void* user_data, int err, const char* json);
  */
 WEBRTC_API webrtc_handle webrtc_factory_create(void);   /* 失败返回 NULL */
 WEBRTC_API void webrtc_factory_destroy(webrtc_handle factory);
+
+/* 注册 factory 级事件回调(设备热插拔 onDeviceChange 等全局事件), 0 成功。
+ * event_json: {"event":"onDeviceChange"} */
+WEBRTC_API int webrtc_factory_set_event_cb(webrtc_handle factory,
+                                           webrtc_event_cb cb,
+                                           void* user_data);
 
 /* ---- createPeerConnection(对应 dart: createPeerConnection) ----
  * configuration_json:
@@ -102,6 +111,9 @@ WEBRTC_API char* webrtc_get_sources(webrtc_handle factory);
 /* 选择麦克风输入设备, 0 成功 */
 WEBRTC_API int webrtc_select_audio_input(webrtc_handle factory,
                                          const char* device_id);
+/* 选择播放设备, 0 成功 */
+WEBRTC_API int webrtc_select_audio_output(webrtc_handle factory,
+                                          const char* device_id);
 /* 创建空本地流, 返回 {"streamId":uuid} */
 WEBRTC_API char* webrtc_create_local_media_stream(webrtc_handle factory);
 /* 取流内轨道 {"audioTracks":[...],"videoTracks":[...]} */
@@ -113,6 +125,10 @@ WEBRTC_API void webrtc_media_stream_dispose(webrtc_handle factory,
 /* 释放单个轨道(停采集) */
 WEBRTC_API void webrtc_media_stream_track_dispose(webrtc_handle factory,
                                                   const char* track_id);
+/* 开/关轨道(enabled), 0 成功 */
+WEBRTC_API int webrtc_media_stream_track_set_enable(webrtc_handle factory,
+                                                    const char* track_id,
+                                                    int enabled);
 /* 往流里加/移除轨道, 0 成功 */
 WEBRTC_API int webrtc_media_stream_add_track(webrtc_handle factory,
                                              const char* stream_id,
@@ -121,9 +137,20 @@ WEBRTC_API int webrtc_media_stream_remove_track(webrtc_handle factory,
                                                 const char* stream_id,
                                                 const char* track_id);
 
-/* ---- 被控: peer connection answer 流程 ---- */
+/* ---- 被控/主控: peer connection 协商流程 ---- */
 /* 关闭连接(句柄仍有效) */
 WEBRTC_API void webrtc_pc_close(webrtc_handle pc);
+/* 异步 createOffer, 回调返回 {"sdp":"...","type":"offer"} */
+WEBRTC_API void webrtc_pc_create_offer(webrtc_handle pc,
+                                       const char* constraints_json,
+                                       webrtc_result_cb cb, void* user_data);
+/* 异步取本地/远端会话描述, 回调返回 {"sdp":"...","type":"..."} */
+WEBRTC_API void webrtc_pc_get_local_description(webrtc_handle pc,
+                                                webrtc_result_cb cb,
+                                                void* user_data);
+WEBRTC_API void webrtc_pc_get_remote_description(webrtc_handle pc,
+                                                 webrtc_result_cb cb,
+                                                 void* user_data);
 /* 异步 createAnswer, 回调返回 {"sdp":"...","type":"answer"} */
 WEBRTC_API void webrtc_pc_create_answer(webrtc_handle pc,
                                         const char* constraints_json,
@@ -163,6 +190,107 @@ WEBRTC_API void webrtc_pc_transceiver_set_codec_preferences(
 WEBRTC_API void webrtc_pc_get_stats(webrtc_handle pc, const char* track_id,
                                     webrtc_result_cb cb, void* user_data);
 
+/* ---- 主控/发送方补充(参考 flutter_peerconnection.h, 对齐 dart webrtc_interface) ---- */
+/* AddTransceiver: track 或 mediaType + transceiverInit(可选)。
+ *   track_id 非空走 track 重载; mediaType "audio"|"video"; init_json: {"direction","streamIds","sendEncodings"}
+ * 返回 transceiver 的 JSON(transceiverToMap), 失败 NULL */
+WEBRTC_API char* webrtc_pc_add_transceiver(webrtc_handle pc,
+                                           const char* track_id,
+                                           const char* media_type,
+                                           const char* init_json);
+/* 返回 {"receivers":[...]}(receiverToMap) */
+WEBRTC_API char* webrtc_pc_get_receivers(webrtc_handle pc);
+/* 给 sender 设 track(替换画面/音频), 回调 err==0 成功 */
+WEBRTC_API void webrtc_pc_sender_set_track(webrtc_handle pc,
+                                           const char* sender_id,
+                                           const char* track_id,
+                                           webrtc_result_cb cb, void* user_data);
+/* 给 sender 设 streamIds(空串分隔的列表), 回调 err==0 成功 */
+WEBRTC_API void webrtc_pc_sender_set_stream(webrtc_handle pc,
+                                            const char* sender_id,
+                                            const char* stream_ids_json,
+                                            webrtc_result_cb cb, void* user_data);
+/* stop transceiver, 回调 err==0 成功 */
+WEBRTC_API void webrtc_pc_transceiver_stop(webrtc_handle pc,
+                                           const char* transceiver_id,
+                                           webrtc_result_cb cb, void* user_data);
+/* 取 transceiver 当前方向, 回调返回 {"result":"sendrecv"|...} */
+WEBRTC_API void webrtc_pc_transceiver_get_current_direction(
+    webrtc_handle pc, const char* transceiver_id, webrtc_result_cb cb,
+    void* user_data);
+/* 设置 transceiver 方向, 回调 err==0 成功 */
+WEBRTC_API void webrtc_pc_transceiver_set_direction(
+    webrtc_handle pc, const char* transceiver_id, const char* direction,
+    webrtc_result_cb cb, void* user_data);
+/* 设置 PC 配置(iceServers 等; 参考实现本身即 TODO, 仅成功返回), 回调 err==0 */
+WEBRTC_API void webrtc_pc_set_configuration(webrtc_handle pc,
+                                            const char* configuration_json,
+                                            webrtc_result_cb cb,
+                                            void* user_data);
+
+/* ---- 补充: 媒体流/ICE重启/DTMF/状态查询(对齐 flutter_webrtc.cc) ---- */
+/* 把本地流挂到/摘离 pc(stream_id 指向 createLocalMediaStream/getUserMedia 的流), 0 成功 */
+WEBRTC_API int webrtc_pc_add_stream(webrtc_handle pc, const char* stream_id);
+WEBRTC_API int webrtc_pc_remove_stream(webrtc_handle pc, const char* stream_id);
+/* 重启 ICE (pc->RestartIce) */
+WEBRTC_API void webrtc_pc_restart_ice(webrtc_handle pc);
+/* DTMF: 按 senderId 询问能否插入 / 插入音调, 返回 1 成功 */
+WEBRTC_API int webrtc_pc_sender_can_insert_dtmf(webrtc_handle pc,
+                                                const char* sender_id);
+WEBRTC_API int webrtc_pc_sender_insert_dtmf(webrtc_handle pc,
+                                            const char* sender_id,
+                                            const char* tones, int duration,
+                                            int gap);
+/* 设置音频轨道音量(0.0~1.0), 0 成功 */
+WEBRTC_API int webrtc_track_set_volume(webrtc_handle factory,
+                                       const char* track_id, double volume);
+/* 状态同步查询 → {"state":"..."}, 失败 "" */
+WEBRTC_API char* webrtc_pc_get_signaling_state(webrtc_handle pc);
+WEBRTC_API char* webrtc_pc_get_ice_gathering_state(webrtc_handle pc);
+WEBRTC_API char* webrtc_pc_get_ice_connection_state(webrtc_handle pc);
+WEBRTC_API char* webrtc_pc_get_connection_state(webrtc_handle pc);
+
+/* ---- E2EE 帧加密(对齐 flutter_frame_cryptor) ----
+ * createFrameCryptor 以 pc 句柄为第一个参数(本 C ABI 以句柄传递 PC),
+ * constraints_json: {"type":"sender|receiver","rtpSenderId"|"rtpReceiverId",
+ *   "algorithm":0|1,"participantId","keyProviderId"}
+ * → {"frameCryptorId":uuid}, 失败 ""。
+ * 其余方法以 factory 句柄 + constraints_json 调用。
+ * 所有 KeyProvider 的 key/ratchetSalt/sifTrailer 等字节数组用 JSON 数字数组表示。
+ * 状态事件经 factory 事件回调上报: {"event":"frameCryptionStateChanged",...}
+ */
+WEBRTC_API char* webrtc_frame_cryptor_factory_create_frame_cryptor(
+    webrtc_handle pc, const char* constraints_json);
+WEBRTC_API char* webrtc_frame_cryptor_set_key_index(webrtc_handle factory,
+                                                    const char* constraints_json);
+WEBRTC_API char* webrtc_frame_cryptor_get_key_index(webrtc_handle factory,
+                                                    const char* constraints_json);
+WEBRTC_API char* webrtc_frame_cryptor_set_enabled(webrtc_handle factory,
+                                                  const char* constraints_json);
+WEBRTC_API char* webrtc_frame_cryptor_get_enabled(webrtc_handle factory,
+                                                  const char* constraints_json);
+WEBRTC_API char* webrtc_frame_cryptor_dispose(webrtc_handle factory,
+                                              const char* constraints_json);
+/* KeyProvider: 创建(从 keyProviderOptions)→ {"keyProviderId":uuid} */
+WEBRTC_API char* webrtc_frame_cryptor_factory_create_key_provider(
+    webrtc_handle factory, const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_set_shared_key(webrtc_handle factory,
+                                                    const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_ratchet_shared_key(
+    webrtc_handle factory, const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_export_shared_key(
+    webrtc_handle factory, const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_set_key(webrtc_handle factory,
+                                             const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_ratchet_key(webrtc_handle factory,
+                                                 const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_export_key(webrtc_handle factory,
+                                                const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_set_sif_trailer(webrtc_handle factory,
+                                                     const char* constraints_json);
+WEBRTC_API char* webrtc_key_provider_dispose(webrtc_handle factory,
+                                             const char* constraints_json);
+
 /* ---- 被控: 系统音频采集(扬声器 loopback) ----
  * params_json: {"deviceId":"","streamId":"","enablePcmRecording":false,"pcmFilePath":""}
  * 返回 {"streamId","ownerTag","audioTracks":[...],"videoTracks":[]}, 失败 NULL
@@ -182,6 +310,10 @@ WEBRTC_API int webrtc_enable_sys_audio_pcm_recording(webrtc_handle factory,
  */
 WEBRTC_API char* webrtc_get_desktop_sources(webrtc_handle factory,
                                             const char* types_json);
+/* 不强制重载的源列表刷新(桌源增删改名经 factory 事件回调上报), →
+ * {"result":true}, 失败 NULL */
+WEBRTC_API char* webrtc_update_desktop_sources(webrtc_handle factory,
+                                               const char* types_json);
 /* constraints_json:
  *   {"video":{"deviceId":{"exact":"<sourceId>"},"mandatory":{"frameRate":30},"cursor":"never"}}
  * → {"streamId","audioTracks":[],"videoTracks":[{id,label,kind,enabled}]}, 失败 NULL

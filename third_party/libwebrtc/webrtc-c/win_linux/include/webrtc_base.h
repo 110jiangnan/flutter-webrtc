@@ -33,6 +33,7 @@
 #include "rtc_video_device.h"
 
 #include "webrtc_common.h"
+#include "webrtc.h"
 
 namespace webrtc {
 
@@ -43,6 +44,7 @@ class WebrtcPeerConnection;
 class WebrtcDataChannel;
 class WebrtcDataChannelObserver;
 class WebrtcScreenCapture;
+class WebrtcFrameCryptor;
 // PC 观察者(定义在 webrtc_peerconnection.h, 这里仅前向声明供注册表用裸指针)
 class CppPcObserver;
 
@@ -52,6 +54,7 @@ class WebrtcBase {
   friend class WebrtcPeerConnection;
   friend class WebrtcDataChannel;
   friend class WebrtcScreenCapture;
+  friend class WebrtcFrameCryptor;
 
  public:
   enum ParseConstraintType { kMandatory, kOptional };
@@ -113,6 +116,9 @@ class WebrtcBase {
                         ParseConstraintType type = kMandatory);
 
  public:
+  // factory 级事件回调(设备热插拔 onDeviceChange 等全局事件)
+  webrtc_event_cb factory_event_cb_ = nullptr;
+  void* factory_event_ud_ = nullptr;
   scoped_refptr<RTCPeerConnectionFactory> factory_;
   // 系统音频专用: is_myaudio=true, 不挂默认音频设备模块(同 flutter empty_adm_factory_)
   scoped_refptr<RTCPeerConnectionFactory> empty_adm_factory_;
@@ -123,6 +129,12 @@ class WebrtcBase {
   scoped_refptr<RTCDesktopCapturer> desktop_capturer_;
   std::vector<scoped_refptr<MediaSource>> desktop_sources_;
   std::map<DesktopType, scoped_refptr<RTCDesktopMediaList>> desktop_medialist_;
+  // 持久的屏幕采集对象(参考 flutter 的 FlutterScreenCapture 常驻):
+  // 注册为 MediaListObserver 才能持续收到桌源增删/改名事件。
+  std::unique_ptr<WebrtcScreenCapture> screen_capture_;
+  // 持久的 E2EE 帧加密对象(参考 flutter_frame_cryptor 的 FlutterFrameCryptor 常驻):
+  // 跨调用保存 frame_cryptors_ / key_providers_ 注册表。
+  std::unique_ptr<WebrtcFrameCryptor> frame_cryptor_;
   scoped_refptr<RTCAudioProcessing> audio_processing_;
   // createPeerConnection 用的 RTCConfiguration(同 flutter configuration_)
   RTCConfiguration configuration_;

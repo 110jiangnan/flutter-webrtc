@@ -59,6 +59,9 @@ class WebrtcDataChannel {
  private:
   WebrtcDataChannelObserver* ObserverForId(const char* flutter_id);
 
+  // 锁内取出 data channel 引用(scoped_refptr 保活), Send/BufferedAmount 用
+  scoped_refptr<RTCDataChannel> DataChannelForId(const char* flutter_id);
+
   WebrtcBase* base_;
 };
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
+import 'dart:typed_data';
 
 import 'package:webrtc_interface/webrtc_interface.dart';
 
@@ -12,13 +13,20 @@ import 'rtc_rtp_receiver.dart';
 import 'rtc_rtp_sender.dart';
 import 'rtc_rtp_transceiver.dart';
 
-class _StubDtmfSender extends RTCDTMFSender {
-  @override
-  Future<void> insertDTMF(String tones,
-      {int duration = 100, int interToneGap = 70}) async {}
+class _DtmfSenderFfi extends RTCDTMFSender {
+  _DtmfSenderFfi(this._pc, this._senderId);
+  final Pointer<Void> _pc;
+  final String _senderId;
 
   @override
-  Future<bool> canInsertDtmf() async => false;
+  Future<void> insertDTMF(String tones,
+      {int duration = 100, int interToneGap = 70}) async {
+    WebrtcC.pcSenderInsertDtmf(_pc, _senderId, tones, duration, interToneGap);
+  }
+
+  @override
+  Future<bool> canInsertDtmf() async =>
+      WebrtcC.pcSenderCanInsertDtmf(_pc, _senderId);
 }
 
 /// 镜像 rtc_peerconnection_impl.dart 的 RTCPeerConnectionNative。
@@ -52,7 +60,7 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
   @override
   Map<String, dynamic> get getConfiguration => _configuration;
 
-  void _handleEvent(String json) {
+  void _handleEvent(String json, Uint8List? binary) {
     final map = jsonDecode(json) as Map<String, dynamic>;
     switch (map['event']) {
       case 'signalingState':
@@ -166,6 +174,7 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
 
   @override
   Future<void> setConfiguration(Map<String, dynamic> configuration) async {
+    await WebrtcC.pcSetConfiguration(_pc, jsonEncode(configuration));
     _configuration.clear();
     _configuration.addAll(configuration);
   }
@@ -173,7 +182,10 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
   @override
   Future<RTCSessionDescription> createOffer(
       [Map<String, dynamic>? constraints]) async {
-    throw UnimplementedError('被控端不创建 offer');
+    final json =
+        await WebrtcC.pcCreateOffer(_pc, jsonEncode(constraints ?? const {}));
+    return RTCSessionDescription(
+        json['sdp'] as String, json['type'] as String);
   }
 
   @override
@@ -197,10 +209,23 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
   }
 
   @override
-  Future<RTCSessionDescription?> getLocalDescription() async => null;
+  Future<RTCSessionDescription?> getLocalDescription() async {
+    final json = await WebrtcC.pcGetLocalDescription(_pc);
+    return _sdpOrNull(json);
+  }
 
   @override
-  Future<RTCSessionDescription?> getRemoteDescription() async => null;
+  Future<RTCSessionDescription?> getRemoteDescription() async {
+    final json = await WebrtcC.pcGetRemoteDescription(_pc);
+    return _sdpOrNull(json);
+  }
+
+  RTCSessionDescription? _sdpOrNull(Map<String, dynamic> json) {
+    final sdp = json['sdp'] as String?;
+    final type = json['type'] as String?;
+    if (sdp == null || sdp.isEmpty) return null;
+    return RTCSessionDescription(sdp, type ?? '');
+  }
 
   @override
   Future<void> addCandidate(RTCIceCandidate candidate) async {
@@ -236,7 +261,9 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
   }
 
   @override
-  Future<void> restartIce() async {}
+  Future<void> restartIce() async {
+    WebrtcC.pcRestartIce(_pc);
+  }
 
   @override
   Future<void> close() async {
@@ -244,8 +271,16 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
   }
 
   @override
-  RTCDTMFSender createDtmfSender(MediaStreamTrack track) =>
-      _StubDtmfSender();
+  RTCDTMFSender createDtmfSender(MediaStreamTrack track) {
+    final senders = WebrtcC.pcGetSenders(_pc);
+    for (final s in senders) {
+      final t = (s as Map)['track'];
+      if (t is Map && (t['id'] == track.id)) {
+        return _DtmfSenderFfi(_pc, s['senderId'] as String);
+      }
+    }
+    return _DtmfSenderFfi(_pc, '');
+  }
 
   @override
   Future<List<RTCRtpSender>> getSenders() async {
@@ -254,8 +289,7 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
 
   @override
   Future<List<RTCRtpReceiver>> getReceivers() async {
-    // C ABI 未实现 getReceivers(被控是发送方), 返回空
-    return const [];
+    return RTCRtpReceiverFfi.fromMaps(WebrtcC.pcGetReceivers(_pc), pc: _pc);
   }
 
   @override
@@ -284,13 +318,62 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
       {MediaStreamTrack? track,
       RTCRtpMediaType? kind,
       RTCRtpTransceiverInit? init}) async {
-    // C ABI 未实现 AddTransceiver(被控发送用 addTrack), 抛未实现
-    throw UnimplementedError('addTransceiver: 被控发送用 addTrack');
+    Map<String, dynamic> initMap = const {};
+    if (init != null) {
+      initMap = {
+        if (init.direction != null)
+          'direction': _directionToString(init.direction!),
+        if (init.streams != null)
+          'streamIds': init.streams!.map((e) => e.id).toList(),
+        if (init.sendEncodings != null)
+          'sendEncodings':
+              init.sendEncodings!.map((e) => e.toMap()).toList(),
+      };
+    }
+    final response = WebrtcC.pcAddTransceiver(
+        _pc,
+        track?.id,
+        kind == null ? '' : _mediaTypeToString(kind),
+        jsonEncode(initMap));
+    if (response == null) {
+      throw Exception('addTransceiver failed');
+    }
+    return RTCRtpTransceiverFfi.fromMap(response, pc: _pc);
+  }
+
+  static String _directionToString(TransceiverDirection d) {
+    switch (d) {
+      case TransceiverDirection.SendRecv:
+        return 'sendrecv';
+      case TransceiverDirection.SendOnly:
+        return 'sendonly';
+      case TransceiverDirection.RecvOnly:
+        return 'recvonly';
+      case TransceiverDirection.Stopped:
+        return 'stoped';
+      case TransceiverDirection.Inactive:
+        return 'inactive';
+    }
+  }
+
+  static String _mediaTypeToString(RTCRtpMediaType kind) {
+    switch (kind) {
+      case RTCRtpMediaType.RTCRtpMediaTypeAudio:
+        return 'audio';
+      case RTCRtpMediaType.RTCRtpMediaTypeVideo:
+        return 'video';
+      case RTCRtpMediaType.RTCRtpMediaTypeData:
+        return 'data';
+    }
   }
 
   @override
-  Future<void> addStream(MediaStream stream) async {}
+  Future<void> addStream(MediaStream stream) async {
+    WebrtcC.pcAddStream(_pc, stream.id);
+  }
 
   @override
-  Future<void> removeStream(MediaStream stream) async {}
+  Future<void> removeStream(MediaStream stream) async {
+    WebrtcC.pcRemoveStream(_pc, stream.id);
+  }
 }

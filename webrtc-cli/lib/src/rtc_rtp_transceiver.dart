@@ -56,15 +56,39 @@ class RTCRtpTransceiverFfi extends RTCRtpTransceiver {
   bool get stoped => _stoped;
 
   @override
-  Future<TransceiverDirection?> getCurrentDirection() async => _direction;
+  Future<TransceiverDirection?> getCurrentDirection() async {
+    final dir = await WebrtcC.pcTransceiverGetCurrentDirection(_pc, transceiverId);
+    if (dir.isEmpty) return null;
+    return transceiverDirectionForString(dir);
+  }
 
   @override
-  Future<TransceiverDirection> getDirection() async =>
-      _direction ?? TransceiverDirection.Inactive;
+  Future<TransceiverDirection> getDirection() async {
+    final current = await getCurrentDirection();
+    if (current != null) _direction = current;
+    return _direction ?? TransceiverDirection.Inactive;
+  }
 
   @override
   Future<void> setDirection(TransceiverDirection direction) async {
+    await WebrtcC.pcTransceiverSetDirection(
+        _pc, transceiverId, _directionToString(direction));
     _direction = direction;
+  }
+
+  static String _directionToString(TransceiverDirection d) {
+    switch (d) {
+      case TransceiverDirection.SendRecv:
+        return 'sendrecv';
+      case TransceiverDirection.SendOnly:
+        return 'sendonly';
+      case TransceiverDirection.RecvOnly:
+        return 'recvonly';
+      case TransceiverDirection.Stopped:
+        return 'stoped';
+      case TransceiverDirection.Inactive:
+        return 'inactive';
+    }
   }
 
   @override
@@ -76,6 +100,8 @@ class RTCRtpTransceiverFfi extends RTCRtpTransceiver {
 
   @override
   Future<void> stop() async {
+    await WebrtcC.pcTransceiverStop(_pc, transceiverId);
     _stoped = true;
+    _direction = TransceiverDirection.Stopped;
   }
 }

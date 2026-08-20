@@ -3,7 +3,7 @@ description: WebRTC 桌面端 FFI 绑定库(仅 PC), API 命名与参数风格�
 version: 0.0.1
 
 environment:
-  sdk: ^3.13.0-282.1.beta
+  sdk: ^3.13.0-167.1.beta
 
 dependencies:
   ffi: ^2.1.0

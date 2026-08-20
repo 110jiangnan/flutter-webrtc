@@ -82,8 +82,35 @@ static char* WebrtcMallocString(NSString* __nullable s) {
 @implementation WebrtcEventCallback
 
 - (void)post:(NSDictionary*)event {
-  NSString* json = [[NSString alloc] initWithData:WebrtcJsonData(event) encoding:NSUTF8StringEncoding];
-  if (json) [self postString:json];
+  [self post:event binary:nil];
+}
+
+- (void)post:(NSDictionary*)event binary:(NSData*)binary {
+  // 二进制消息: JSON 的 "data" 置空串, 原始字节从 binary 指针直传
+  id sanitized = WebrtcJsonSanitize(event);
+  if (binary) {
+    // 把 "data" 字段置空——数据走 binary 参数
+    if ([sanitized isKindOfClass:[NSMutableDictionary class]]) {
+      ((NSMutableDictionary*)sanitized)[@"data"] = @"";
+    }
+  }
+  NSData* jsonData = [NSJSONSerialization dataWithJSONObject:sanitized options:0 error:nil];
+  if (!jsonData) return;
+  NSString* json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+  if (!json) return;
+  if (!self.cb) return;
+  webrtc_event_cb cb = self.cb;
+  void* ud = self.userData;
+  const char* cstr = [json UTF8String];
+  char* copy = (char*)malloc(strlen(cstr) + 1);
+  if (copy) strcpy(copy, cstr);
+  // 块内引用 binary 让 ARC retain 住 NSData, 避免异步派发后 bytes 悬垂
+  NSData* binData = binary;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    cb(ud, copy, binData ? (const uint8_t*)binData.bytes : NULL,
+       binData ? (int)binData.length : 0);
+    free(copy);
+  });
 }
 
 - (void)postString:(NSString*)json {
@@ -95,7 +122,7 @@ static char* WebrtcMallocString(NSString* __nullable s) {
   if (copy) strcpy(copy, cstr);
   // darwin 的 postEvent 派发主线程; 事件由 webrtc signaling 线程触发, 保持一致
   dispatch_async(dispatch_get_main_queue(), ^{
-    cb(ud, copy);
+    cb(ud, copy, NULL, 0);
     free(copy);
   });
 }

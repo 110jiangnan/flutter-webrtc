@@ -325,6 +325,80 @@ void UpdateRtpParameters(const JNode& json,
   }
 }
 
+// ================= 主控/发送方辅助(对齐 flutter mapToRtpTransceiverInit 等) =================
+
+RTCRtpTransceiverDirection TransceiverDirectionFromString(const std::string& d) {
+  if (d == "sendrecv") return RTCRtpTransceiverDirection::kSendRecv;
+  if (d == "sendonly") return RTCRtpTransceiverDirection::kSendOnly;
+  if (d == "recvonly") return RTCRtpTransceiverDirection::kRecvOnly;
+  if (d == "stoped") return RTCRtpTransceiverDirection::kStopped;
+  if (d == "inactive") return RTCRtpTransceiverDirection::kInactive;
+  return RTCRtpTransceiverDirection::kInactive;
+}
+
+RTCMediaType MediaTypeFromString(const std::string& s) {
+  if (s == "audio") return RTCMediaType::AUDIO;
+  if (s == "video") return RTCMediaType::VIDEO;
+  if (s == "data") return RTCMediaType::DATA;
+  return RTCMediaType::UNSUPPORTED;
+}
+
+// 参考 mapToEncoding: 默认 active=true, scaleResolutionDownBy=1.0
+scoped_refptr<RTCRtpEncodingParameters> MapToEncoding(const JNode& map) {
+  scoped_refptr<RTCRtpEncodingParameters> encoding =
+      RTCRtpEncodingParameters::Create();
+  encoding->set_active(true);
+  encoding->set_scale_resolution_down_by(1.0);
+
+  const JNode* active = map.Get("active");
+  if (active && active->type == JNode::kBool) encoding->set_active(active->b);
+  const JNode* rid = map.Get("rid");
+  if (rid && rid->type == JNode::kStr) encoding->set_rid(rid->s.c_str());
+  const JNode* ssrc = map.Get("ssrc");
+  if (ssrc && ssrc->type == JNode::kNum)
+    encoding->set_ssrc(static_cast<uint32_t>(ssrc->n));
+  const JNode* min_bitrate = map.Get("minBitrate");
+  if (min_bitrate && min_bitrate->type == JNode::kNum)
+    encoding->set_min_bitrate_bps(static_cast<int>(min_bitrate->n));
+  const JNode* max_bitrate = map.Get("maxBitrate");
+  if (max_bitrate && max_bitrate->type == JNode::kNum)
+    encoding->set_max_bitrate_bps(static_cast<int>(max_bitrate->n));
+  const JNode* max_framerate = map.Get("maxFramerate");
+  if (max_framerate && max_framerate->type == JNode::kNum)
+    encoding->set_max_framerate(static_cast<int>(max_framerate->n));
+  const JNode* num_temporal = map.Get("numTemporalLayers");
+  if (num_temporal && num_temporal->type == JNode::kNum)
+    encoding->set_num_temporal_layers(static_cast<int>(num_temporal->n));
+  const JNode* scale = map.Get("scaleResolutionDownBy");
+  if (scale && scale->type == JNode::kNum)
+    encoding->set_scale_resolution_down_by(scale->n);
+  const JNode* scalability = map.Get("scalabilityMode");
+  if (scalability && scalability->type == JNode::kStr)
+    encoding->set_scalability_mode(scalability->s.c_str());
+  return encoding;
+}
+
+// 参考 mapToRtpTransceiverInit: 解析 direction/streamIds/sendEncodings
+scoped_refptr<RTCRtpTransceiverInit> MapToRtpTransceiverInit(const JNode& init) {
+  std::vector<string> stream_ids;
+  const JNode* stream_ids_node = init.Get("streamIds");
+  if (stream_ids_node && stream_ids_node->type == JNode::kArr) {
+    for (auto& item : stream_ids_node->arr)
+      if (item.type == JNode::kStr) stream_ids.push_back(item.s.c_str());
+  }
+  RTCRtpTransceiverDirection dir = RTCRtpTransceiverDirection::kInactive;
+  const JNode* direction = init.Get("direction");
+  if (direction && direction->type == JNode::kStr)
+    dir = TransceiverDirectionFromString(direction->s);
+  std::vector<scoped_refptr<RTCRtpEncodingParameters>> encodings;
+  const JNode* send_encodings = init.Get("sendEncodings");
+  if (send_encodings && send_encodings->type == JNode::kArr) {
+    for (auto& item : send_encodings->arr)
+      if (item.type == JNode::kObj) encodings.push_back(MapToEncoding(item));
+  }
+  return RTCRtpTransceiverInit::Create(dir, stream_ids, encodings);
+}
+
 }  // namespace
 
 // ================= 观察者定义(事件格式对齐 flutter_peerconnection.cc) =================
@@ -336,7 +410,7 @@ void CppPcObserver::Fire(const std::string& event, const JNode& body) {
   evt.obj.emplace_back("event", MakeStr(event));
   for (auto& kv : body.obj) evt.obj.push_back(kv);
   std::string json = ToJson(evt);
-  cb_(ud_, json.c_str());
+  cb_(ud_, json.c_str(), nullptr, 0);
 }
 
 void CppPcObserver::OnIceCandidate(scoped_refptr<RTCIceCandidate> candidate) {
@@ -489,8 +563,15 @@ void CppPcObserver::RemoveStreamForId(const std::string& id) {
   remote_streams_.erase(id);
 }
 
+// ============================================================================
+// WebrtcPeerConnection: 成员函数实现顺序对齐 flutter_peerconnection.h 的
+// FlutterPeerConnection(Create↔CreateRTCPeerConnection, Close/Dispose↔
+// RTCPeerConnectionClose/RTCPeerConnectionDispose)。
+// ============================================================================
+
 WebrtcPeerConnection::WebrtcPeerConnection(WebrtcBase* base) : base_(base) {}
 
+// ---- 建连(CreateRTCPeerConnection) ----
 webrtc_handle WebrtcPeerConnection::Create(const JNode& configuration,
                                            const JNode& constraints,
                                            webrtc_event_cb on_event,
@@ -520,8 +601,41 @@ webrtc_handle WebrtcPeerConnection::Create(const JNode& configuration,
   return h;
 }
 
-// ================= 被控: answer 流程 =================
+// ---- RTCPeerConnectionClose ----
+void WebrtcPeerConnection::Close(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc) return;
+  h->pc->Close();
+}
 
+// ---- RTCPeerConnectionDispose ----
+void WebrtcPeerConnection::Dispose(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h) return;
+  if (h->pc) h->pc->DeRegisterRTCPeerConnectionObserver();
+  delete h;
+}
+
+// ---- CreateOffer ----
+void WebrtcPeerConnection::CreateOffer(const JNode& constraints,
+                                       webrtc_handle pc, webrtc_result_cb cb,
+                                       void* ud) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !cb) return;
+  scoped_refptr<RTCMediaConstraints> media_constraints =
+      h->base ? h->base->ParseMediaConstraints(constraints)
+              : RTCMediaConstraints::Create();
+
+  h->pc->CreateOffer(
+      [cb, ud](const string sdp, const string type) {
+        std::string json = ToJson(MakeObj({{"sdp", MakeStr(sdp.std_string())},
+                                           {"type", MakeStr(type.std_string())}}));
+        cb(ud, 0, json.c_str());
+      },
+      [cb, ud](const char* error) { cb(ud, -1, nullptr); }, media_constraints);
+}
+
+// ---- CreateAnswer ----
 void WebrtcPeerConnection::CreateAnswer(const JNode& constraints,
                                         webrtc_handle pc, webrtc_result_cb cb,
                                         void* ud) {
@@ -540,6 +654,7 @@ void WebrtcPeerConnection::CreateAnswer(const JNode& constraints,
       [cb, ud](const char* error) { cb(ud, -1, nullptr); }, media_constraints);
 }
 
+// ---- SetLocalDescription / SetRemoteDescription ----
 void WebrtcPeerConnection::SetLocalDescription(const char* sdp, const char* type,
                                                webrtc_handle pc,
                                                webrtc_result_cb cb, void* ud) {
@@ -563,64 +678,63 @@ void WebrtcPeerConnection::SetRemoteDescription(const char* sdp,
       [cb, ud](const char* error) { cb(ud, -1, nullptr); });
 }
 
-// ================= 被控: ICE =================
-
-int WebrtcPeerConnection::AddIceCandidate(webrtc_handle pc,
-                                          const char* candidate_json) {
+// ---- GetLocalDescription / GetRemoteDescription ----
+void WebrtcPeerConnection::GetLocalDescription(webrtc_handle pc,
+                                               webrtc_result_cb cb, void* ud) {
   auto* h = static_cast<PcHandle*>(pc);
-  if (!h || !h->pc || !candidate_json) return -1;
-
-  JNode c = ParseJson(candidate_json);
-  int sdp_mline_index = 0;
-  const JNode* mline = c.Get("sdpMLineIndex");
-  if (mline && mline->type == JNode::kNum) sdp_mline_index = static_cast<int>(mline->n);
-  h->pc->AddCandidate(c.StrOf("sdpMid").c_str(), sdp_mline_index,
-                      c.StrOf("candidate").c_str());
-  return 0;
+  if (!h || !h->pc || !cb) return;
+  h->pc->GetLocalDescription(
+      [cb, ud](const char* sdp, const char* type) {
+        std::string json = ToJson(MakeObj({{"sdp", MakeStr(sdp ? sdp : "")},
+                                           {"type", MakeStr(type ? type : "")}}));
+        cb(ud, 0, json.c_str());
+      },
+      [cb, ud](const char* error) { cb(ud, -1, nullptr); });
 }
 
-// ================= 被控: 发送媒体 =================
-
-char* WebrtcPeerConnection::AddTrack(webrtc_handle pc, const char* track_id,
-                                     const char* stream_id) {
+void WebrtcPeerConnection::GetRemoteDescription(webrtc_handle pc,
+                                                webrtc_result_cb cb, void* ud) {
   auto* h = static_cast<PcHandle*>(pc);
-  if (!h || !h->pc || !track_id) return nullptr;
-
-  scoped_refptr<RTCMediaTrack> track = h->base->MediaTrackForId(track_id);
-  if (!track) return nullptr;
-
-  std::vector<string> ids;
-  if (stream_id) ids.push_back(stream_id);
-  vector<string> stream_ids(ids);  // portable::vector, 从 std::vector 构造
-
-  scoped_refptr<RTCRtpSender> sender = h->pc->AddTrack(track, stream_ids);
-  if (!sender) return nullptr;
-  return StrDup(ToJson(RtpSenderToJNode(sender.get())));
+  if (!h || !h->pc || !cb) return;
+  h->pc->GetRemoteDescription(
+      [cb, ud](const char* sdp, const char* type) {
+        std::string json = ToJson(MakeObj({{"sdp", MakeStr(sdp ? sdp : "")},
+                                           {"type", MakeStr(type ? type : "")}}));
+        cb(ud, 0, json.c_str());
+      },
+      [cb, ud](const char* error) { cb(ud, -1, nullptr); });
 }
 
-char* WebrtcPeerConnection::RemoveTrack(webrtc_handle pc,
-                                        const char* sender_id) {
-  auto* h = static_cast<PcHandle*>(pc);
-  if (!h || !h->pc || !sender_id) return nullptr;
-  scoped_refptr<RTCRtpSender> sender = FindSenderById(h, sender_id);
-  if (!sender) return nullptr;
-  bool ok = h->pc->RemoveTrack(sender);
-  return StrDup(ToJson(MakeObj({{"result", MakeBool(ok)}})));
-}
-
-char* WebrtcPeerConnection::GetSenders(webrtc_handle pc) {
+// ---- AddTransceiver ----
+// 参考的 mapToRtpTransceiverInit / stringToTransceiverDirection / mapToEncoding
+// 辅助已做成匿名函数(见文件头匿名 namespace), 此处对接号即可。
+char* WebrtcPeerConnection::AddTransceiver(webrtc_handle pc,
+                                           const char* track_id,
+                                           const char* media_type,
+                                           const char* init_json) {
   auto* h = static_cast<PcHandle*>(pc);
   if (!h || !h->pc) return nullptr;
-  JNode list;
-  list.type = JNode::kArr;
-  for (auto& sender : h->pc->senders().std_vector())
-    list.arr.push_back(RtpSenderToJNode(sender.get()));
-  JNode result;
-  result.type = JNode::kObj;
-  result.obj.emplace_back("senders", std::move(list));
-  return StrDup(ToJson(result));
+
+  scoped_refptr<RTCMediaTrack> track =
+      track_id ? h->base->MediaTrackForId(track_id) : nullptr;
+  JNode init = init_json ? ParseJson(init_json) : JNode();
+  bool has_init = init.type == JNode::kObj && !init.obj.empty();
+
+  scoped_refptr<RTCRtpTransceiver> transceiver;
+  if (has_init) {
+    scoped_refptr<RTCRtpTransceiverInit> tr_init = MapToRtpTransceiverInit(init);
+    transceiver = track ? h->pc->AddTransceiver(track, tr_init)
+                        : h->pc->AddTransceiver(MediaTypeFromString(media_type ? media_type : ""),
+                                                tr_init);
+  } else {
+    transceiver = track ? h->pc->AddTransceiver(track)
+                        : h->pc->AddTransceiver(MediaTypeFromString(media_type ? media_type : ""));
+  }
+  if (!transceiver) return nullptr;
+  return StrDup(ToJson(TransceiverToJNode(transceiver.get())));
 }
 
+// ---- GetTransceivers ----
 char* WebrtcPeerConnection::GetTransceivers(webrtc_handle pc) {
   auto* h = static_cast<PcHandle*>(pc);
   if (!h || !h->pc) return nullptr;
@@ -634,6 +748,57 @@ char* WebrtcPeerConnection::GetTransceivers(webrtc_handle pc) {
   return StrDup(ToJson(result));
 }
 
+// ---- GetReceivers ----
+char* WebrtcPeerConnection::GetReceivers(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc) return nullptr;
+  JNode list;
+  list.type = JNode::kArr;
+  for (auto& receiver : h->pc->receivers().std_vector())
+    list.arr.push_back(RtpReceiverToJNode(receiver.get()));
+  JNode result;
+  result.type = JNode::kObj;
+  result.obj.emplace_back("receivers", std::move(list));
+  return StrDup(ToJson(result));
+}
+
+// ---- RtpSenderSetTrack(含 RtpSenderReplaceTrack: 参考二者都走 set_track) ----
+void WebrtcPeerConnection::RtpSenderSetTrack(webrtc_handle pc,
+                                             const char* sender_id,
+                                             const char* track_id,
+                                             webrtc_result_cb cb, void* ud) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !sender_id || !cb) return;
+  scoped_refptr<RTCRtpSender> sender = FindSenderById(h, sender_id);
+  if (!sender) { cb(ud, -1, nullptr); return; }
+  scoped_refptr<RTCMediaTrack> track =
+      (track_id && *track_id) ? h->base->MediaTrackForId(track_id) : nullptr;
+  bool ok = sender->set_track(track);
+  cb(ud, ok ? 0 : -1, nullptr);
+}
+
+// ---- RtpSenderSetStream ----
+void WebrtcPeerConnection::RtpSenderSetStream(webrtc_handle pc,
+                                              const char* sender_id,
+                                              const char* stream_ids_json,
+                                              webrtc_result_cb cb, void* ud) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !sender_id || !cb) return;
+  scoped_refptr<RTCRtpSender> sender = FindSenderById(h, sender_id);
+  if (!sender) { cb(ud, -1, nullptr); return; }
+
+  std::vector<string> ids;
+  JNode node = stream_ids_json ? ParseJson(stream_ids_json) : JNode();
+  if (node.type == JNode::kArr) {
+    for (auto& item : node.arr)
+      if (item.type == JNode::kStr) ids.push_back(item.s.c_str());
+  }
+  vector<string> stream_ids(ids);
+  sender->set_stream_ids(stream_ids);
+  cb(ud, 0, nullptr);
+}
+
+// ---- RtpSenderSetParameters ----
 char* WebrtcPeerConnection::RtpSenderSetParameters(webrtc_handle pc,
                                                    const char* sender_id,
                                                    const char* params_json) {
@@ -648,6 +813,58 @@ char* WebrtcPeerConnection::RtpSenderSetParameters(webrtc_handle pc,
   return StrDup(ToJson(MakeObj({{"result", MakeBool(ok)}})));
 }
 
+// ---- RtpTransceiverStop ----
+void WebrtcPeerConnection::RtpTransceiverStop(webrtc_handle pc,
+                                              const char* transceiver_id,
+                                              webrtc_result_cb cb, void* ud) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !transceiver_id || !cb) return;
+  scoped_refptr<RTCRtpTransceiver> transceiver =
+      FindTransceiverById(h, transceiver_id);
+  if (!transceiver) { cb(ud, -1, nullptr); return; }
+  transceiver->StopInternal();
+  cb(ud, 0, nullptr);
+}
+
+// ---- RtpTransceiverGetCurrentDirection ----
+void WebrtcPeerConnection::RtpTransceiverGetCurrentDirection(
+    webrtc_handle pc, const char* transceiver_id, webrtc_result_cb cb,
+    void* ud) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !transceiver_id || !cb) return;
+  scoped_refptr<RTCRtpTransceiver> transceiver =
+      FindTransceiverById(h, transceiver_id);
+  if (!transceiver) { cb(ud, -1, nullptr); return; }
+  std::string json = ToJson(MakeObj({
+      {"result", MakeStr(TransceiverDirectionString(transceiver->current_direction()))},
+  }));
+  cb(ud, 0, json.c_str());
+}
+
+// ---- SetConfiguration(参考实现本身即 TODO, 这里仅成功返回) ----
+void WebrtcPeerConnection::SetConfiguration(webrtc_handle pc,
+                                            const char* configuration_json,
+                                            webrtc_result_cb cb, void* ud) {
+  if (cb) cb(ud, 0, nullptr);
+}
+
+// ---- RtpTransceiverSetDirection ----
+void WebrtcPeerConnection::RtpTransceiverSetDirection(webrtc_handle pc,
+                                                      const char* transceiver_id,
+                                                      const char* direction,
+                                                      webrtc_result_cb cb,
+                                                      void* ud) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !transceiver_id || !direction || !cb) return;
+  scoped_refptr<RTCRtpTransceiver> transceiver =
+      FindTransceiverById(h, transceiver_id);
+  if (!transceiver) { cb(ud, -1, nullptr); return; }
+  auto res = transceiver->SetDirectionWithError(
+      TransceiverDirectionFromString(direction));
+  cb(ud, res.std_string().empty() ? 0 : -1, nullptr);
+}
+
+// ---- RtpTransceiverSetCodecPreferences ----
 void WebrtcPeerConnection::RtpTransceiverSetCodecPreferences(
     webrtc_handle pc, const char* transceiver_id, const char* codecs_json) {
   auto* h = static_cast<PcHandle*>(pc);
@@ -679,6 +896,36 @@ void WebrtcPeerConnection::RtpTransceiverSetCodecPreferences(
   transceiver->SetCodecPreferences(pcodes);
 }
 
+// ---- GetSenders ----
+char* WebrtcPeerConnection::GetSenders(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc) return nullptr;
+  JNode list;
+  list.type = JNode::kArr;
+  for (auto& sender : h->pc->senders().std_vector())
+    list.arr.push_back(RtpSenderToJNode(sender.get()));
+  JNode result;
+  result.type = JNode::kObj;
+  result.obj.emplace_back("senders", std::move(list));
+  return StrDup(ToJson(result));
+}
+
+// ---- AddIceCandidate ----
+int WebrtcPeerConnection::AddIceCandidate(webrtc_handle pc,
+                                          const char* candidate_json) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !candidate_json) return -1;
+
+  JNode c = ParseJson(candidate_json);
+  int sdp_mline_index = 0;
+  const JNode* mline = c.Get("sdpMLineIndex");
+  if (mline && mline->type == JNode::kNum) sdp_mline_index = static_cast<int>(mline->n);
+  h->pc->AddCandidate(c.StrOf("sdpMid").c_str(), sdp_mline_index,
+                      c.StrOf("candidate").c_str());
+  return 0;
+}
+
+// ---- GetStats ----
 void WebrtcPeerConnection::GetStats(webrtc_handle pc, const char* track_id,
                                     webrtc_result_cb cb, void* ud) {
   auto* h = static_cast<PcHandle*>(pc);
@@ -721,30 +968,111 @@ void WebrtcPeerConnection::GetStats(webrtc_handle pc, const char* track_id,
   }
 }
 
-// ================= 生命周期 =================
+// ---- AddTrack / RemoveTrack ----
+char* WebrtcPeerConnection::AddTrack(webrtc_handle pc, const char* track_id,
+                                     const char* stream_id) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !track_id) return nullptr;
 
-void WebrtcPeerConnection::Close(webrtc_handle pc) {
+  scoped_refptr<RTCMediaTrack> track = h->base->MediaTrackForId(track_id);
+  if (!track) return nullptr;
+
+  std::vector<string> ids;
+  if (stream_id) ids.push_back(stream_id);
+  vector<string> stream_ids(ids);  // portable::vector, 从 std::vector 构造
+
+  scoped_refptr<RTCRtpSender> sender = h->pc->AddTrack(track, stream_ids);
+  if (!sender) return nullptr;
+  return StrDup(ToJson(RtpSenderToJNode(sender.get())));
+}
+
+char* WebrtcPeerConnection::RemoveTrack(webrtc_handle pc,
+                                        const char* sender_id) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !sender_id) return nullptr;
+  scoped_refptr<RTCRtpSender> sender = FindSenderById(h, sender_id);
+  if (!sender) return nullptr;
+  bool ok = h->pc->RemoveTrack(sender);
+  return StrDup(ToJson(MakeObj({{"result", MakeBool(ok)}})));
+}
+
+// ================= 补充: addStream/removeStream/restartIce/DTMF/状态查询 =================
+
+int WebrtcPeerConnection::AddStream(webrtc_handle pc, const char* stream_id) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !stream_id || !h->base) return -1;
+  scoped_refptr<RTCMediaStream> stream = h->base->MediaStreamForId(stream_id);
+  if (!stream) return -1;
+  return h->pc->AddStream(stream) ? 0 : -1;
+}
+
+int WebrtcPeerConnection::RemoveStream(webrtc_handle pc, const char* stream_id) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !stream_id || !h->base) return -1;
+  scoped_refptr<RTCMediaStream> stream = h->base->MediaStreamForId(stream_id);
+  if (!stream) return -1;
+  return h->pc->RemoveStream(stream) ? 0 : -1;
+}
+
+void WebrtcPeerConnection::RestartIce(webrtc_handle pc) {
   auto* h = static_cast<PcHandle*>(pc);
   if (!h || !h->pc) return;
-  h->pc->Close();
+  h->pc->RestartIce();
 }
 
-void WebrtcPeerConnection::Dispose(webrtc_handle pc) {
+int WebrtcPeerConnection::RtpSenderCanInsertDtmf(webrtc_handle pc,
+                                                 const char* sender_id) {
   auto* h = static_cast<PcHandle*>(pc);
-  if (!h) return;
-  if (h->pc) h->pc->DeRegisterRTCPeerConnectionObserver();
-  delete h;
+  if (!h || !h->pc || !sender_id) return 0;
+  scoped_refptr<RTCRtpSender> sender = FindSenderById(h, sender_id);
+  if (!sender || !sender->dtmf_sender()) return 0;
+  return sender->dtmf_sender()->CanInsertDtmf() ? 1 : 0;
 }
 
-// ================= 主控/非被控录制, 无需实现 =================
-// CreateOffer               — 主控发起 offer, 被控只 createAnswer
-// GetLocalDescription       — 调试用, 不涉及被控录制
-// GetRemoteDescription      — 调试用, 不涉及被控录制
-// AddTransceiver            — 被控发送用 addTrack(内部走 AddTransceiver)
-// GetReceivers              — 被控不接收远端媒体(主控端用)
-// RtpSenderSetTrack/SetStream/ReplaceTrack — 被控 addTrack 已建 sender, 无需
-// RtpTransceiverStop/GetCurrentDirection/SetDirection — 发送方向管理, 非录制必需
-// SetConfiguration          — 参考 flutter 本身即 TODO
-// CaptureFrame              — 需要单独的 frame_capturer 模块, 后续批次补
+int WebrtcPeerConnection::RtpSenderInsertDtmf(webrtc_handle pc,
+                                              const char* sender_id,
+                                              const char* tones, int duration,
+                                              int gap) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc || !sender_id || !tones) return 0;
+  scoped_refptr<RTCRtpSender> sender = FindSenderById(h, sender_id);
+  if (!sender || !sender->dtmf_sender()) return 0;
+  return sender->dtmf_sender()->InsertDtmf(tones, duration, gap) ? 1 : 0;
+}
+
+char* WebrtcPeerConnection::GetSignalingState(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc) return StrDup("");
+  return StrDup(ToJson(MakeObj({
+      {"state", MakeStr(SignalingStateString(h->pc->signaling_state()))},
+  })));
+}
+
+char* WebrtcPeerConnection::GetIceGatheringState(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc) return StrDup("");
+  return StrDup(ToJson(MakeObj({
+      {"state", MakeStr(IceGatheringStateString(h->pc->ice_gathering_state()))},
+  })));
+}
+
+char* WebrtcPeerConnection::GetIceConnectionState(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc) return StrDup("");
+  return StrDup(ToJson(MakeObj({
+      {"state", MakeStr(IceConnectionStateString(h->pc->ice_connection_state()))},
+  })));
+}
+
+char* WebrtcPeerConnection::GetConnectionState(webrtc_handle pc) {
+  auto* h = static_cast<PcHandle*>(pc);
+  if (!h || !h->pc) return StrDup("");
+  return StrDup(ToJson(MakeObj({
+      {"state", MakeStr(PeerConnectionStateString(h->pc->peer_connection_state()))},
+  })));
+}
+
+// ================= 未实现 =================
+// CaptureFrame — 需要单独的 frame_capturer 模块(渲染), 按需求排除。
 
 }  // namespace webrtc

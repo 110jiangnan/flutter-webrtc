@@ -140,11 +140,21 @@
 }
 
 - (void)sendEvent:(id)event withChannel:(RTCDataChannel*)channel {
+  [self sendEvent:event binary:nil withChannel:channel];
+}
+
+- (void)sendEvent:(id)event binary:(NSData*)binary withChannel:(RTCDataChannel*)channel {
   if (channel.webrtcEventCallback) {
-    [channel.webrtcEventCallback post:event];
+    [channel.webrtcEventCallback post:event binary:binary];
   } else {
     if (!channel.eventQueue) {
       channel.eventQueue = [NSMutableArray array];
+    }
+    // 队列暂存时 binary 放 event 的 data 字段(base64 兜底)
+    if (binary) {
+      NSMutableDictionary* m = [event mutableCopy];
+      m[@"data"] = binary;
+      event = m;
     }
     channel.eventQueue = [channel.eventQueue arrayByAddingObject:event];
   }
@@ -164,9 +174,11 @@
 - (void)dataChannel:(RTCDataChannel*)channel didReceiveMessageWithBuffer:(RTCDataBuffer*)buffer {
   NSString* type;
   id data;
+  NSData* binary = nil;
   if (buffer.isBinary) {
     type = @"binary";
-    data = buffer.data;  // NSData; 序列化层 base64
+    data = @"";  // 二进制数据走 binary 指针, JSON 里放空串
+    binary = buffer.data;
   } else {
     type = @"text";
     data = [[NSString alloc] initWithData:buffer.data encoding:NSUTF8StringEncoding];
@@ -178,6 +190,7 @@
     @"type" : type,
     @"data" : (data ? data : [NSNull null])
   }
+        binary:binary
       withChannel:channel];
 }
 

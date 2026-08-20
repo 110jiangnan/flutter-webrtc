@@ -87,18 +87,41 @@ class DesktopCapturerFfi implements DesktopCapturer {
   DesktopCapturerFfi._();
   static final DesktopCapturerFfi instance = DesktopCapturerFfi._();
 
+  final _onAdded = StreamController<DesktopCapturerSource>.broadcast();
+  final _onRemoved = StreamController<DesktopCapturerSource>.broadcast();
+  final _onNameChanged = StreamController<DesktopCapturerSource>.broadcast();
+  // 缩略图像素属"渲染显示", C ABI 未下发; 保持空 impl 占位
+  final _onThumbnailChanged =
+      StreamController<DesktopCapturerSource>.broadcast();
+
   @override
-  StreamController<DesktopCapturerSource> get onAdded =>
-      throw UnimplementedError();
+  StreamController<DesktopCapturerSource> get onAdded => _onAdded;
   @override
-  StreamController<DesktopCapturerSource> get onRemoved =>
-      throw UnimplementedError();
+  StreamController<DesktopCapturerSource> get onRemoved => _onRemoved;
   @override
-  StreamController<DesktopCapturerSource> get onNameChanged =>
-      throw UnimplementedError();
+  StreamController<DesktopCapturerSource> get onNameChanged => _onNameChanged;
   @override
   StreamController<DesktopCapturerSource> get onThumbnailChanged =>
-      throw UnimplementedError();
+      _onThumbnailChanged;
+
+  /// 由 factory 级事件回调路由进来(desktopSourceAdded/Removed/NameChanged)。
+  void handleDesktopEvent(String event, Map<String, dynamic> map) {
+    final source = DesktopCapturerSourceFfi(
+        map['id'] as String? ?? '',
+        map['name'] as String? ?? '',
+        map['type'] == 'window' ? SourceType.Window : SourceType.Screen);
+    switch (event) {
+      case 'desktopSourceAdded':
+        _onAdded.add(source);
+        break;
+      case 'desktopSourceRemoved':
+        _onRemoved.add(source);
+        break;
+      case 'desktopSourceNameChanged':
+        _onNameChanged.add(source);
+        break;
+    }
+  }
 
   @override
   Future<List<DesktopCapturerSource>> getSources(
@@ -121,12 +144,14 @@ class DesktopCapturerFfi implements DesktopCapturer {
 
   @override
   Future<bool> updateSources({required List<SourceType> types}) async {
-    await getSources(types: types);
-    return true;
+    final typesList =
+        types.map((e) => desktopSourceTypeToString[e]!).toList();
+    return WebrtcC.updateDesktopSources(
+        WebrtcRuntime.instance.factory, jsonEncode(typesList));
   }
 
   @override
   Future<void> setExternalFrameCallback(int callbackAddress) async {
-    // C ABI 未实现 SetExternalFrameCallback(锁屏帧替换), 待补
+    // 渲染相关(外部帧回调), 按需求排除
   }
 }

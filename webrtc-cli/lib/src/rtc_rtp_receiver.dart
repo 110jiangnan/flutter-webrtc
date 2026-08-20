@@ -43,6 +43,8 @@ class RTCRtpReceiverFfi extends RTCRtpReceiver {
 
   String get peerConnectionId => _peerConnectionId;
 
+  Pointer<Void> get pc => _pc;
+
   @override
   MediaStreamTrack? get track => _track;
 

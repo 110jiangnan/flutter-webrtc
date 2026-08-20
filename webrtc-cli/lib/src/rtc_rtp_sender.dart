@@ -7,13 +7,20 @@ import 'media_stream_track.dart';
 import 'native/ffi/webrtc_c.dart';
 import 'rtc_rtp_utils.dart';
 
-class _StubDtmfSender extends RTCDTMFSender {
-  @override
-  Future<void> insertDTMF(String tones,
-      {int duration = 100, int interToneGap = 70}) async {}
+class _DtmfSenderFfi extends RTCDTMFSender {
+  _DtmfSenderFfi(this._pc, this._senderId);
+  final Pointer<Void> _pc;
+  final String _senderId;
 
   @override
-  Future<bool> canInsertDtmf() async => false;
+  Future<void> insertDTMF(String tones,
+      {int duration = 100, int interToneGap = 70}) async {
+    WebrtcC.pcSenderInsertDtmf(_pc, _senderId, tones, duration, interToneGap);
+  }
+
+  @override
+  Future<bool> canInsertDtmf() async =>
+      WebrtcC.pcSenderCanInsertDtmf(_pc, _senderId);
 }
 
 /// 镜像 rtc_rtp_sender_impl.dart 的 RTCRtpSenderNative。
@@ -52,9 +59,11 @@ class RTCRtpSenderFfi extends RTCRtpSender {
   RTCRtpParameters _parameters;
   bool _ownsTrack = false;
   final Set<MediaStream> _streams = {};
-  final RTCDTMFSender _dtmf = _StubDtmfSender();
+  RTCDTMFSender get _dtmf => _DtmfSenderFfi(_pc, senderId);
 
   String get peerConnectionId => _peerConnectionId;
+
+  Pointer<Void> get pc => _pc;
 
   @override
   MediaStreamTrack? get track => _track;
@@ -84,20 +93,25 @@ class RTCRtpSenderFfi extends RTCRtpSender {
         _pc, senderId, jsonEncode(parameters.toMap()));
   }
 
-  // replaceTrack/setTrack/setStreams: C ABI 侧未实现, 只更新本地引用
+  // replaceTrack/setTrack → sender_set_track(内部 set_track); setStreams → sender_set_stream
   @override
   Future<void> replaceTrack(MediaStreamTrack? track) async {
+    await WebrtcC.pcSenderSetTrack(_pc, senderId, track?.id);
     _track = track;
   }
 
   @override
   Future<void> setTrack(MediaStreamTrack? track,
       {bool takeOwnership = true}) async {
+    await WebrtcC.pcSenderSetTrack(_pc, senderId, track?.id);
     _track = track;
+    _ownsTrack = takeOwnership;
   }
 
   @override
   Future<void> setStreams(List<MediaStream> streams) async {
+    final ids = streams.map((e) => e.id).toList();
+    await WebrtcC.pcSenderSetStream(_pc, senderId, jsonEncode(ids));
     _streams.addAll(streams);
   }
 

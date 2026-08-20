@@ -37,6 +37,8 @@ bool WebrtcScreenCapture::BuildDesktopSourcesList(const JNode& types,
       source_list = it->second;
     } else {
       source_list = base_->desktop_device_->GetDesktopMediaList(desktop_type);
+      // 常驻 observer 才能在列表生命周期内收到增删/改名事件(参考 RegisterMediaListObserver)
+      source_list->RegisterMediaListObserver(this);
       base_->desktop_medialist_[desktop_type] = source_list;
     }
     source_list->UpdateSourceList(force_reload);
@@ -66,6 +68,12 @@ std::string WebrtcScreenCapture::GetDesktopSources(const JNode& types) {
   result.type = JNode::kObj;
   result.obj.emplace_back("sources", std::move(list));
   return ToJson(result);
+}
+
+std::string WebrtcScreenCapture::UpdateDesktopSources(const JNode& types) {
+  // 参考 UpdateDesktopSources: 不强制重载(force_reload=false), 返回 {"result":true}
+  if (!BuildDesktopSourcesList(types, false)) return "";
+  return ToJson(MakeObj({{"result", MakeBool(true)}}));
 }
 
 std::string WebrtcScreenCapture::GetDisplayMedia(const JNode& constraints) {
@@ -149,6 +157,46 @@ std::string WebrtcScreenCapture::GetDisplayMedia(const JNode& constraints) {
   }));
   result.obj.emplace_back("videoTracks", std::move(video_tracks));
   return ToJson(result);
+}
+
+// ================= MediaListObserver: 桌源变化事件(对齐 flutter_screen_capture.cc) =================
+
+void WebrtcScreenCapture::FireDesktopEvent(const std::string& event,
+                                           const JNode& body) {
+  if (!base_->factory_event_cb_) return;
+  JNode evt;
+  evt.type = JNode::kObj;
+  evt.obj.emplace_back("event", MakeStr(event));
+  for (auto& kv : body.obj) evt.obj.push_back(kv);
+  std::string json = ToJson(evt);
+  base_->factory_event_cb_(base_->factory_event_ud_, json.c_str(), nullptr, 0);
+}
+
+void WebrtcScreenCapture::OnMediaSourceAdded(scoped_refptr<MediaSource> source) {
+  FireDesktopEvent("desktopSourceAdded", MakeObj({
+      {"id", MakeStr(source->id().std_string())},
+      {"name", MakeStr(source->name().std_string())},
+      {"type", MakeStr(source->type() == kWindow ? "window" : "screen")},
+      {"thumbnailSize", MakeObj({{"width", MakeNum(0)}, {"height", MakeNum(0)}})},
+  }));
+}
+
+void WebrtcScreenCapture::OnMediaSourceRemoved(scoped_refptr<MediaSource> source) {
+  FireDesktopEvent("desktopSourceRemoved",
+                   MakeObj({{"id", MakeStr(source->id().std_string())}}));
+}
+
+void WebrtcScreenCapture::OnMediaSourceNameChanged(
+    scoped_refptr<MediaSource> source) {
+  FireDesktopEvent("desktopSourceNameChanged", MakeObj({
+      {"id", MakeStr(source->id().std_string())},
+      {"name", MakeStr(source->name().std_string())},
+  }));
+}
+
+void WebrtcScreenCapture::OnMediaSourceThumbnailChanged(
+    scoped_refptr<MediaSource> source) {
+  // 缩略图像素属"渲染显示", 排除(空实现占位派生必需)
 }
 
 }  // namespace webrtc

@@ -3,6 +3,8 @@
 #include "helper.h"
 
 #include "webrtc_data_channel.h"  // 析构 data_channel_observers_ 需要完整类型
+#include "webrtc_screen_capture.h"  // 析构 screen_capture_ 需要完整类型
+#include "webrtc_frame_cryptor.h"  // 析构 frame_cryptor_ 需要完整类型
 
 namespace webrtc {
 
@@ -15,6 +17,8 @@ WebrtcBase::~WebrtcBase() {
   local_tracks_.clear();
   video_capturers_.clear();
   data_channel_observers_.clear();
+  screen_capture_.reset();
+  frame_cryptor_.reset();
   peerconnections_.clear();
   peerconnection_observers_.clear();
 }
