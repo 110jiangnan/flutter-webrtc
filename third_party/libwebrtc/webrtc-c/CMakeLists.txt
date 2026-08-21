@@ -26,6 +26,7 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND WEBRTC_C_SOURCES
     win_linux/src/webrtc.cc
     win_linux/src/webrtc_common.cc
+    common/parson.c
     win_linux/src/webrtc_base.cc
     win_linux/src/webrtc_media_stream.cc
     win_linux/src/webrtc_peerconnection.cc
@@ -47,6 +48,7 @@ elseif(APPLE)
     mac/src/WebrtcRTCMediaStream.mm
     mac/src/WebrtcRTCDataChannel.mm
     mac/src/WebrtcRTCDesktopCapturer.mm
+    mac/src/WebrtcRTCFrameCryptor.mm
     mac/src/SysAudioCapturer.mm
     mac/src/SysAudioTrackManager.mm
     mac/src/CameraUtils.mm
@@ -70,6 +72,7 @@ target_include_directories(webrtc_c PRIVATE
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_include_directories(webrtc_c PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/win_linux/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/common"
   )
 elseif(APPLE)
   target_include_directories(webrtc_c PRIVATE
@@ -119,6 +122,7 @@ elseif(APPLE)
     mac/src/WebrtcRTCMediaStream.mm
     mac/src/WebrtcRTCDataChannel.mm
     mac/src/WebrtcRTCDesktopCapturer.mm
+    mac/src/WebrtcRTCFrameCryptor.mm
     mac/src/SysAudioCapturer.mm
     mac/src/SysAudioTrackManager.mm
     mac/src/CameraUtils.mm

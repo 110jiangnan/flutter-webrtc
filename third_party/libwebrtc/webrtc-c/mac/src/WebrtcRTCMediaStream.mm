@@ -712,6 +712,50 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
                               details:nil]);
 }
 
+/* selectAudioOutput: —— 对应 C ABI webrtc_select_audio_output(播放设备)。
+ * 照抄 darwin FlutterRTCMediaStream.m selectAudioOutput:; 桌面走 RTCAudioDeviceModule 输出设备。 */
+- (void)selectAudioOutput:(NSString*)deviceId result:(WebrtcResult)result {
+#if TARGET_OS_OSX
+  RTCAudioDeviceModule* audioDeviceModule = [self.peerConnectionFactory audioDeviceModule];
+  NSArray* outputDevices = [audioDeviceModule outputDevices];
+  for (RTCIODevice* device in outputDevices) {
+    if ([deviceId isEqualToString:device.deviceId]) {
+      [audioDeviceModule setOutputDevice:device];
+      if (result) result(nil);
+      return;
+    }
+  }
+#endif
+#if TARGET_OS_IPHONE
+  RTCAudioSession* session = [RTCAudioSession sharedInstance];
+  NSError* setCategoryError = nil;
+
+  if ([deviceId isEqualToString:@"Speaker"]) {
+    [session.session overrideOutputAudioPort:kAudioSessionOverrideAudioRoute_Speaker
+                                       error:&setCategoryError];
+  } else {
+    [session.session overrideOutputAudioPort:kAudioSessionOverrideAudioRoute_None
+                                       error:&setCategoryError];
+  }
+
+  if (setCategoryError == nil) {
+    if (result) result(nil);
+    return;
+  }
+
+  if (result)
+    result([WebrtcError
+        errorWithCode:@"selectAudioOutputFailed"
+              message:[NSString
+                          stringWithFormat:@"Error: %@", [setCategoryError localizedFailureReason]]
+              details:nil]);
+#endif
+  if (result)
+    result([WebrtcError errorWithCode:@"selectAudioOutputFailed"
+                              message:[NSString stringWithFormat:@"Error: deviceId not found!"]
+                              details:nil]);
+}
+
 - (void)mediaStreamTrackRelease:(RTCMediaStream*)mediaStream track:(RTCMediaStreamTrack*)track {
   if (mediaStream && track) {
     track.isEnabled = NO;

@@ -816,4 +816,28 @@ NSDictionary<NSString*, NSString*>* stringToParameters(NSString* str) {
   }
 }
 
+// 照抄 darwin getLocalDescription / getRemoteDescription, 去 Flutter。
+// nil 会话描述 -> result(nil)(err 0, json NULL); 有则 {"sdp","type"}。
+- (void)peerConnectionGetLocalDescription:(RTCPeerConnection*)peerConnection
+                                   result:(WebrtcResult)result {
+  RTCSessionDescription* sdp = peerConnection.localDescription;
+  if (nil == sdp) {
+    result(nil);
+  } else {
+    NSString* type = [RTCSessionDescription stringForType:sdp.type];
+    result(@{@"sdp" : sdp.sdp, @"type" : type});
+  }
+}
+
+- (void)peerConnectionGetRemoteDescription:(RTCPeerConnection*)peerConnection
+                                    result:(WebrtcResult)result {
+  RTCSessionDescription* sdp = peerConnection.remoteDescription;
+  if (nil == sdp) {
+    result(nil);
+  } else {
+    NSString* type = [RTCSessionDescription stringForType:sdp.type];
+    result(@{@"sdp" : sdp.sdp, @"type" : type});
+  }
+}
+
 @end

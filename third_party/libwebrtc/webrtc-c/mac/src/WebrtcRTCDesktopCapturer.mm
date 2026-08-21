@@ -167,6 +167,26 @@ static NSArray<RTCDesktopSource*>* _captureSources;
 #endif
 }
 
+/* updateDesktopSources: —— 对应 C ABI webrtc_update_desktop_sources(不强制重载的源列表刷新)。
+ * 照抄 darwin FlutterRTCDesktopCapturer.m updateDesktopSources:;
+ * 源增删/改名经 plugin 的 RTCDesktopMediaListDelegate 由 postFactoryEvent 上报。 */
+- (void)updateDesktopSources:(NSDictionary*)argsMap result:(WebrtcResult)result {
+#if TARGET_OS_OSX
+  NSArray* types = [argsMap objectForKey:@"types"];
+  if (types == nil) {
+    result([WebrtcError errorWithCode:@"ERROR" message:@"types is required" details:nil]);
+    return;
+  }
+  if (![self buildDesktopSourcesListWithTypes:types forceReload:NO result:result]) {
+    NSLog(@"updateDesktopSources failed.");
+    return;
+  }
+  result(@{@"result" : @YES});
+#else
+  result([WebrtcError errorWithCode:@"ERROR" message:@"Not supported on iOS" details:nil]);
+#endif
+}
+
 #if TARGET_OS_OSX
 - (RTCDesktopSource*)getSourceById:(NSString*)sourceId {
   NSEnumerator* enumerator = [_captureSources objectEnumerator];

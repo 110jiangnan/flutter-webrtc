@@ -11,21 +11,24 @@ webrtc-cli 是**纯 Dart FFI 项目**（无 Flutter 依赖），底层走 `third
 
 ## 1. webrtc-cli 现有功能面（以它为准，mac 只对齐这些）
 
-从 `webrtc-cli/lib/src/native/ffi/webrtc_c.dart` 的 `lookupFunction` 提取，共 **38 个 `webrtc_*` 符号**：
+从 `webrtc-cli/lib/src/native/ffi/webrtc_c.dart` 的 `lookupFunction` 提取，共 **79 个 `webrtc_*` 符号**（与 `mac/include/webrtc.h` 逐一对齐；早期文档记 38，任务 #17/#18/#19 补齐了 E2EE 帧加密与全部 PC 补充导出）：
 
 | 能力 | C ABI 函数 | 对应 darwin ObjC 来源 |
 |---|---|---|
-| factory | `webrtc_factory_create/destroy` | `FlutterWebRTCPlugin.m`：`initialize:` + 单例工厂 |
-| getUserMedia | `webrtc_get_user_media`、`webrtc_get_sources`、`webrtc_select_audio_input` | `FlutterWebRTCPlugin.m`：`getUserMedia:/getSources:/selectAudioInput:` + `CameraUtils`/`LocalVideoTrack`/`LocalAudioTrack` |
-| 本地流 | `webrtc_create_local_media_stream`、`webrtc_media_stream_*`、`webrtc_stream_dispose` | `FlutterRTCMediaStream.m` |
-| PC / SDP / ICE | `webrtc_create_peer_connection`、`webrtc_pc_*`(destroy/close/create_answer/set_local/remote/add_ice_candidate/get_stats) | `FlutterRTCPeerConnection.m` |
-| 发送媒体 | `webrtc_pc_add_track/remove_track/get_senders/get_transceivers/sender_set_parameters/transceiver_set_codec_preferences` | `FlutterRTCPeerConnection.m` |
+| factory | `webrtc_factory_create/destroy/set_event_cb` | `FlutterWebRTCPlugin.m`：`initialize:` + 单例工厂 |
+| getUserMedia | `webrtc_get_user_media`、`webrtc_get_sources`、`webrtc_select_audio_input/output` | `FlutterWebRTCPlugin.m`：`getUserMedia:/getSources:/selectAudioInput:` + `CameraUtils`/`LocalVideoTrack`/`LocalAudioTrack` |
+| 本地流 | `webrtc_create_local_media_stream`、`webrtc_media_stream_*`(get_tracks/add_track/remove_track/track_dispose/dispose/track_set_enable)、`webrtc_track_set_volume`、`webrtc_stream_dispose` | `FlutterRTCMediaStream.m` |
+| PC / SDP / ICE | `webrtc_create_peer_connection`、`webrtc_pc_destroy/close/create_offer/create_answer/get_local/remote_description/set_local/remote_description/add_ice_candidate/restart_ice/add_stream/remove_stream/set_configuration` | `FlutterRTCPeerConnection.m` |
+| 发送媒体 | `webrtc_pc_add_track/remove_track/get_senders/get_transceivers/get_receivers/sender_set_parameters/sender_set_track/sender_set_stream/add_transceiver/transceiver_set_codec_preferences/transceiver_stop/transceiver_get_current_direction/transceiver_set_direction` | `FlutterRTCPeerConnection.m` |
+| DTMF | `webrtc_pc_sender_can_insert_dtmf/insert_dtmf` | `FlutterRTCPeerConnection.m`（rtpSenderCanInsertDtmf/InsertDtmf） |
+| 状态查询 | `webrtc_pc_get_signaling_state/get_ice_gathering_state/get_ice_connection_state/get_connection_state` | `FlutterRTCPeerConnection.m` |
 | RTP cap | `webrtc_factory_get_rtp_sender/receiver_capabilities` | `FlutterRTCPeerConnection.m` |
-| 数据通道 | `webrtc_create_data_channel`、`webrtc_data_channel_*` | `FlutterRTCDataChannel.m` |
+| E2EE 帧加密 | `webrtc_frame_cryptor_factory_*`(create_frame_cryptor/create_key_provider)、`webrtc_frame_cryptor_*`(set/get_key_index、set/get_enabled、dispose)、`webrtc_key_provider_*`(set_shared_key、ratchet_shared_key、export_shared_key、set_key、ratchet_key、export_key、set_sif_trailer、dispose) | `FlutterWebRTCPlugin.m`（FrameCryptor 分类，见 §9，去 per-cryptor eventChannel 改走 factory 事件回调） |
+| 数据通道 | `webrtc_create_data_channel`、`webrtc_data_channel_*`(set_callback/send/buffered_amount/close) | `FlutterRTCDataChannel.m` |
 | **系统音频**(扬声器 loopback) | `webrtc_get_sys_audio_media`、`webrtc_release_sys_audio_media`、`webrtc_enable_sys_audio_pcm_recording` | `SysAudioCapturer.m`(ScreenCaptureKit) + `SysAudioTrackManager.m` |
-| **屏幕采集** | `webrtc_get_desktop_sources`、`webrtc_get_display_media` | `FlutterRTCDesktopCapturer.m` |
+| **屏幕采集** | `webrtc_get_desktop_sources`、`webrtc_update_desktop_sources`、`webrtc_get_display_media` | `FlutterRTCDesktopCapturer.m` |
 
-> 不搬（webrtc-cli 不调、mac 不写）：createOffer（仅被控用 answer）、sendDtmf、addStream/removeStream、录制器 recorder、frame_cryptor、视频渲染 renderer（webrtc-cli 无渲染，`videoRenderer()` 抛 UnimplementedError）。**但** `handleMethodCall` 对应业务方法仍在 darwin 里，照抄时按需裁剪。
+> 不搬（webrtc-cli 不调、mac 不写）：录制器 recorder、视频渲染 renderer（webrtc-cli 无渲染，`videoRenderer()` 抛 UnimplementedError）。DataPacketCryptor 无 dart 消费，未搬。`handleMethodCall` 对应业务方法仍在 darwin 里，照抄时按需裁剪。
 
 ## 2. mac 不复用 webrtc-c 的 C ABI —— 各自独立
 
@@ -45,7 +48,7 @@ third_party/libwebrtc/webrtc-c/
 ├── win_linux/              ← win/linux 独有 C++ (见 windowslinux迁移方案.md, 不改)
 └── mac/                     ← mac 独立整套（从 common/darwin 照抄）
     ├── include/
-    │   └── webrtc.h         ← 照抄顶层 webrtc.h（只留 38 个函数的签名）
+    │   └── webrtc.h         ← 照抄顶层 webrtc.h（79 个函数签名）
     └── src/
         ├── WebrtcPlugin.h / .mm
         │       ← 照抄 FlutterWebRTCPlugin.h/.m：单例 + peerConnections/localStreams/
@@ -150,7 +153,7 @@ endif()
 
 ## 7. 落地顺序
 
-1. `webrtc-c/mac/include/webrtc.h`：照抄顶层，只留 38 个函数签名
+1. `webrtc-c/mac/include/webrtc.h`：照抄顶层，79 个函数签名
 2. `webrtc-c/mac/src/WebrtcPlugin.h/.mm`：单例中枢照抄去 Flutter + C ABI 桥（工厂/getUserMedia/createPC/getSources/selectAudioInput）
 3. `WebrtcRTCPeerConnection.mm` / `WebrtcRTCMediaStream.mm` / `WebrtcRTCDataChannel.mm` / `WebrtcRTCDesktopCapturer.mm` / `SysAudioCapturer` / `SysAudioTrackManager` / `CameraUtils` / `Local*Track`
 4. CMake Darwin 分支改 ObjC 源
@@ -164,20 +167,32 @@ endif()
 - **回调线程**：webrtc_event_cb 在 webrtc signaling 线程触发，dart 侧用 `NativeCallable.listener`（不要 isolateLocal），与顶层 webrtc.h 注释一致。
 - **纯照抄，不新发明**：伪代码/缩略替换只在 Flutter 接线处发生；业务逻辑本体（factory 初始化、mediaStreamToMap、parseMediaConstraints、ScreenCaptureKit 采集）逐字节保留 darwin 实现。
 
-## 9. 当前完成度（截至 2026-08-20，重新开会话后从这里继续）
+## 9. 当前完成度（截至 2026-08-21，任务 #17/#18/#19 收尾）
 
-**源码层已全部落地**（38 个 `webrtc_*` 符号、目录结构、CMake 全就位，未编过，遵守"不编译约束"）：
+**源码层已全部落地**（79 个 `webrtc_*` 符号、目录结构、CMake 全就位，未编过，遵守"不编译约束"）：
 
-- `mac/include/webrtc.h`：照抄顶层，38 个签名。
-- `mac/src/` 全部 27 个文件已写（见 §3 目录树）：`WebrtcPlugin.{h,mm}`（单例中枢 + JSON/C 桥 + `extern "C"` 38 个入口函数）、`WebrtcRTCPeerConnection.{h,mm}`、`WebrtcRTCDataChannel.{h,mm}`、`WebrtcRTCMediaStream.mm`、`WebrtcRTCDesktopCapturer.{h,mm}`、`SysAudioCapturer.{h,mm}`、`SysAudioTrackManager.{h,mm}`、`CameraUtils.{h,mm}`、`LocalTrack.h`、`LocalVideoTrack.{h,mm}`、`LocalAudioTrack.{h,mm}`、`VideoProcessingAdapter.{h,mm}`、`AudioProcessingAdapter.{h,mm}`、`AudioManager.{h,mm}`、`RTCAudioSource+Private.h`、`media_stream_interface.h`。
-- CMake Darwin 分支：13 个 `.mm` 源 + OBJCXX 属性（无 phantom `LocalTrack.mm`，含 `VideoProcessingAdapter/AudioProcessingAdapter/AudioManager`）。
+- `mac/include/webrtc.h`：照抄顶层，79 个签名。
+- `mac/src/` 全部源文件已写（见 §3 目录树）：`WebrtcPlugin.{h,mm}`（单例中枢 + JSON/C 桥 + `extern "C"` 全部入口函数）、`WebrtcRTCPeerConnection.{h,mm}`、`WebrtcRTCDataChannel.{h,mm}`、`WebrtcRTCMediaStream.mm`、`WebrtcRTCDesktopCapturer.{h,mm}`、`WebrtcRTCFrameCryptor.mm`、`SysAudioCapturer.{h,mm}`、`SysAudioTrackManager.{h,mm}`、`CameraUtils.{h,mm}`、`LocalTrack.h`、`LocalVideoTrack.{h,mm}`、`LocalAudioTrack.{h,mm}`、`VideoProcessingAdapter.{h,mm}`、`AudioProcessingAdapter.{h,mm}`、`AudioManager.{h,mm}`、`RTCAudioSource+Private.h`、`media_stream_interface.h`。
+- CMake Darwin 分支：全部 `.mm` 源 + OBJCXX 属性（含 `WebrtcRTCFrameCryptor.mm`，任务 #19 已加入源列表与属性列表）。
+
+**任务 #17（C ABI 方法导出补齐）+ #18（ObjC 业务方法补齐）已完成（2026-08-21）：**
+- `WebrtcPlugin.mm` 新增 25 个 `extern "C"` 导出：`webrtc_factory_set_event_cb`、`webrtc_pc_create_offer`、`webrtc_pc_get_local/remote_description`、`webrtc_pc_add_transceiver`、`webrtc_pc_get_receivers`、`webrtc_pc_sender_set_track/set_stream`、`webrtc_pc_transceiver_stop/get_current_direction/set_direction`、`webrtc_pc_set_configuration`、`webrtc_pc_add_stream/remove_stream`、`webrtc_pc_restart_ice`、`webrtc_pc_sender_can_insert_dtmf/insert_dtmf`、`webrtc_track_set_volume`、`webrtc_media_stream_track_set_enable`、`webrtc_select_audio_output`、`webrtc_update_desktop_sources`、4 个状态查询。
+- 语义对齐：返回值契约照 win/linux C ABI 基线（`0 成功/-1 失败`、`"state"` 查询返回 `{"state":"..."}`）；业务逻辑照抄 darwin（DTMF ms→s、`currentDirection:` 出参、addStream/removeStream 走 `plugin.localStreams`）。
+- `WebrtcRTCPeerConnection.{h,mm}` 新增 `peerConnectionGetLocalDescription:result:` / `peerConnectionGetRemoteDescription:result:`（照抄 darwin getLocalDescription/getRemoteDescription）。
+- 已用脚本核对：header 声明与 mm 定义逐一对齐（79/79，无重复、无遗漏）。
+
+**任务 #19（E2EE FrameCryptor）已完成（2026-08-20）：**
+- `WebrtcRTCFrameCryptor.mm`：frameCryptor/keyProvider 全套业务方法（createFrameCryptor sender/receiver、set/getKeyIndex、set/getEnabled、dispose、createKeyProvider、set/ratchet/exportSharedKey、set/ratchet/exportKey、setSifTrailer、keyProviderDispose）。
+- 与 darwin 的差异：pc 以句柄传参；字节数组（key/ratchetSalt/sifTrailer）在 C 边界是 JSON 数字数组（`WebrtcDataFromJsonArr`/`WebrtcJsonArrFromData`）；状态事件走 factory 级 `webrtc_event_cb`（`{"event":"frameCryptionStateChanged",...}`），不用 per-cryptor eventChannel。
+- DataPacketCryptor 无 dart 消费，不搬。
 
 **已核实的关键点（重开会话可直接信任）：**
-- 38 个 `webrtc_*` 签名与 `mac/include/webrtc.h` 逐一对齐，dart 零改动。
+- 79 个 `webrtc_*` 签名与 `mac/include/webrtc.h` 逐一对齐，dart 零改动。
 - 事件包装 key 用 **`"event"`**（win/linux C++ `Fire()` 与 darwin 都实际用 `event`；webrtc.h 顶部注释写 `type` 是**过时**的，别被误导）。
 - `webrtc_get_user_media` 用 `dispatch_semaphore` 同步等待 darwin 异步回调（依赖 FFI 线程 ≠ AppKit 主线程，否则会阻塞）。
-- `getDesktopSources:` 实现是 `argsMap`（读 `@"types"`），C ABI 层传 `@{@"types": types}`。
+- `getDesktopSources:` / `updateDesktopSources:` 实现是 `argsMap`（读 `@"types"`），C ABI 层传 `@{@"types": types}`。
 - 摄像头辅助 selector（`findDeviceForPosition` 等）只在 `CameraUtils.mm` 定义一次，`WebrtcRTCMediaStream.mm` 仅调用，无重复。
+- `selectAudioInput:/selectAudioOutput:` 业务方法在 `WebrtcRTCMediaStream.mm` 实现（桌面走 RTCAudioDeviceModule），`WebrtcPlugin.h` 仅声明。
 
 **下一步（在 mac 机器上，需要 WebRTC.xcframework）→ 即 §7 第 5-6 步：**
 1. 跑 `cmake` 编出 `libwebrtc_c.dylib`（`-DWEBRTC_MAC_FRAMEWORK=` 指向 xcframework 切片）。

@@ -50,6 +50,12 @@
                           peerConnection:(nonnull RTCPeerConnection*)peerConnection
                                   result:(nonnull WebrtcResult)result;
 
+- (void)peerConnectionGetLocalDescription:(nonnull RTCPeerConnection*)peerConnection
+                                   result:(nonnull WebrtcResult)result;
+
+- (void)peerConnectionGetRemoteDescription:(nonnull RTCPeerConnection*)peerConnection
+                                    result:(nonnull WebrtcResult)result;
+
 - (nonnull RTCMediaConstraints*)parseMediaConstraints:(nonnull NSDictionary*)constraints;
 
 - (void)peerConnectionSetConfiguration:(nonnull RTCConfiguration*)configuration

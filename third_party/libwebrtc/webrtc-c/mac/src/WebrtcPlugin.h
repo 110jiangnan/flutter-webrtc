@@ -77,7 +77,20 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
 @property(nonatomic, strong, nullable)
     NSMutableDictionary<NSString*, CapturerStopHandler>* videoCapturerStopHandlers;
 
+/* E2EE 帧加密注册表(照抄 darwin FlutterWebRTCPlugin 的 frameCryptors/keyProviders)。
+ * 状态事件经 factoryEventCb 上报(factory.dart 路由给 FrameCryptorFfi), 不用 per-cryptor 回调。 */
+@property(nonatomic, strong, nullable)
+    NSMutableDictionary<NSString*, RTCFrameCryptor*>* frameCryptors;
+@property(nonatomic, strong, nullable)
+    NSMutableDictionary<NSString*, RTCFrameCryptorKeyProvider*>* keyProviders;
+
 @property(nonatomic, strong, nullable) AudioManager* audioManager;
+
+/* factory 级事件回调(设备热插拔 onDeviceChange / 桌源增删改名等),
+ * 由 C ABI 的 webrtc_factory_set_event_cb 设置, postFactoryEvent 派发。 */
+@property(nonatomic) webrtc_event_cb factoryEventCb;
+@property(nonatomic) void* factoryEventUd;
+- (void)postFactoryEvent:(nonnull NSDictionary*)event;
 
 /* 工厂初始化(替代 darwin initialize:)。networkIgnoreMask 可传 nil。 */
 - (void)initializeFactory;
@@ -109,15 +122,23 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
 - (nullable NSDictionary*)mediaTrackToMap:(nonnull RTCMediaStreamTrack*)track;
 - (nullable NSDictionary*)receiverToMap:(nonnull RTCRtpReceiver*)receiver;
 - (nullable NSDictionary*)transceiverToMap:(nonnull RTCRtpTransceiver*)transceiver;
+- (RTCRtpMediaType)stringToRtpMediaType:(nonnull NSString*)type;
+- (RTCRtpTransceiverDirection)stringToTransceiverDirection:(nonnull NSString*)type;
+- (nullable RTCRtpEncodingParameters*)mapToEncoding:(nonnull NSDictionary*)map;
+- (nullable RTCRtpTransceiverInit*)mapToTransceiverInit:(nonnull NSDictionary*)map;
 
 - (void)getUserMedia:(nonnull NSDictionary*)constraints
               result:(nonnull WebrtcResult)result;
 - (void)getDisplayMedia:(nonnull NSDictionary*)constraints
                  result:(nonnull WebrtcResult)result;
+- (void)updateDesktopSources:(nonnull NSDictionary*)argsMap
+                      result:(nonnull WebrtcResult)result;
 - (void)createLocalMediaStream:(nonnull WebrtcResult)result;
 - (void)getSources:(nonnull WebrtcResult)result;
 - (void)selectAudioInput:(nullable NSString*)deviceId
                   result:(nonnull WebrtcResult)result;
+- (void)selectAudioOutput:(nullable NSString*)deviceId
+                   result:(nonnull WebrtcResult)result;
 - (void)mediaStreamGetTracks:(nonnull NSString*)streamId
                       result:(nonnull WebrtcResult)result;
 - (void)createPeerConnection:(nonnull NSDictionary*)configuration
@@ -132,6 +153,43 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
                         forId:(nonnull NSString*)peerConnectionId
                        eventCb:(webrtc_event_cb)eventCb
                        userData:(void*)userData;
+
+/* ---- E2EE FrameCryptor/KeyProvider 业务方法(照抄 darwin FlutterWebRTCPlugin (FrameCryptor),
+ *      实现在 WebrtcRTCFrameCryptor.mm)。与 darwin 的两处差异:
+ *      - create 方法不再按 peerConnectionId 查表, 直接收 RTCPeerConnection* 指针;
+ *      - 字节数组(ratchetSalt/key/sifTrailer/返回的 key)在 C 边界是 JSON 数字数组,
+ *        darwin 的 FlutterStandardTypedData 换成 NSData(WebrtcDataFromJsonArr/ArrFromData)。 ---- */
+- (void)frameCryptorFactoryCreateFrameCryptor:(nonnull NSDictionary*)constraints
+                               peerConnection:(nonnull RTCPeerConnection*)peerConnection
+                                       result:(nonnull WebrtcResult)result;
+- (void)frameCryptorSetKeyIndex:(nonnull NSDictionary*)constraints
+                         result:(nonnull WebrtcResult)result;
+- (void)frameCryptorGetKeyIndex:(nonnull NSDictionary*)constraints
+                         result:(nonnull WebrtcResult)result;
+- (void)frameCryptorSetEnabled:(nonnull NSDictionary*)constraints
+                        result:(nonnull WebrtcResult)result;
+- (void)frameCryptorGetEnabled:(nonnull NSDictionary*)constraints
+                        result:(nonnull WebrtcResult)result;
+- (void)frameCryptorDispose:(nonnull NSDictionary*)constraints
+                     result:(nonnull WebrtcResult)result;
+- (void)frameCryptorFactoryCreateKeyProvider:(nonnull NSDictionary*)constraints
+                                      result:(nonnull WebrtcResult)result;
+- (void)keyProviderSetSharedKey:(nonnull NSDictionary*)constraints
+                         result:(nonnull WebrtcResult)result;
+- (void)keyProviderRatchetSharedKey:(nonnull NSDictionary*)constraints
+                             result:(nonnull WebrtcResult)result;
+- (void)keyProviderExportSharedKey:(nonnull NSDictionary*)constraints
+                            result:(nonnull WebrtcResult)result;
+- (void)keyProviderSetKey:(nonnull NSDictionary*)constraints
+                   result:(nonnull WebrtcResult)result;
+- (void)keyProviderRatchetKey:(nonnull NSDictionary*)constraints
+                       result:(nonnull WebrtcResult)result;
+- (void)keyProviderExportKey:(nonnull NSDictionary*)constraints
+                      result:(nonnull WebrtcResult)result;
+- (void)keyProviderSetSifTrailer:(nonnull NSDictionary*)constraints
+                          result:(nonnull WebrtcResult)result;
+- (void)keyProviderDispose:(nonnull NSDictionary*)constraints
+                    result:(nonnull WebrtcResult)result;
 
 + (nullable WebrtcPlugin*)sharedInstance;
 

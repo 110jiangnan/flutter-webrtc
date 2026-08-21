@@ -199,6 +199,8 @@ static WebrtcPlugin* sharedInstance_;
     self.localStreams = [NSMutableDictionary new];
     self.localTracks = [NSMutableDictionary new];
     self.videoCapturerStopHandlers = [NSMutableDictionary new];
+    self.frameCryptors = [NSMutableDictionary new];
+    self.keyProviders = [NSMutableDictionary new];
     self.audioManager = AudioManager.sharedInstance;
   }
   return self;
@@ -206,6 +208,14 @@ static WebrtcPlugin* sharedInstance_;
 
 - (void)ensureAudioSession {
   // macOS 无 AVAudioSession; darwin 的 ensureAudioSession 为 iOS 专用, 此处空实现
+}
+
+- (void)postFactoryEvent:(NSDictionary*)event {
+  if (!self.factoryEventCb) return;
+  WebrtcEventCallback* cb = [WebrtcEventCallback new];
+  cb.cb = self.factoryEventCb;
+  cb.userData = self.factoryEventUd;
+  [cb post:event];
 }
 
 - (void)initializeFactory {
@@ -695,6 +705,100 @@ static WebrtcPlugin* sharedInstance_;
   };
 }
 
+/* ---- 以下四个 helper 照抄 darwin FlutterWebRTCPlugin.m 2320-2419,
+ *      用于 addTransceiver(init/sendEncodings/direction/mediaType) ---- */
+
+- (RTCRtpEncodingParameters*)mapToEncoding:(NSDictionary*)map {
+  RTCRtpEncodingParameters* encoding = [[RTCRtpEncodingParameters alloc] init];
+  encoding.isActive = YES;
+  encoding.scaleResolutionDownBy = [NSNumber numberWithDouble:1.0];
+  encoding.numTemporalLayers = [NSNumber numberWithInt:1];
+#if TARGET_OS_IPHONE
+  encoding.networkPriority = RTCPriorityLow;
+  encoding.bitratePriority = 1.0;
+#endif
+  [encoding setRid:map[@"rid"]];
+
+  if (map[@"active"] != nil) {
+    [encoding setIsActive:((NSNumber*)map[@"active"]).boolValue];
+  }
+
+  if (map[@"minBitrate"] != nil) {
+    [encoding setMinBitrateBps:(NSNumber*)map[@"minBitrate"]];
+  }
+
+  if (map[@"maxBitrate"] != nil) {
+    [encoding setMaxBitrateBps:(NSNumber*)map[@"maxBitrate"]];
+  }
+
+  if (map[@"maxFramerate"] != nil) {
+    [encoding setMaxFramerate:(NSNumber*)map[@"maxFramerate"]];
+  }
+
+  if (map[@"numTemporalLayers"] != nil) {
+    [encoding setNumTemporalLayers:(NSNumber*)map[@"numTemporalLayers"]];
+  }
+
+  if (map[@"scaleResolutionDownBy"] != nil) {
+    [encoding setScaleResolutionDownBy:(NSNumber*)map[@"scaleResolutionDownBy"]];
+  }
+
+  if (map[@"scalabilityMode"] != nil) {
+    [encoding setScalabilityMode:(NSString*)map[@"scalabilityMode"]];
+  }
+
+  return encoding;
+}
+
+- (RTCRtpTransceiverInit*)mapToTransceiverInit:(NSDictionary*)map {
+  NSArray<NSString*>* streamIds = map[@"streamIds"];
+  NSArray<NSDictionary*>* encodingsParams = map[@"sendEncodings"];
+  NSString* direction = map[@"direction"];
+
+  RTCRtpTransceiverInit* init = [RTCRtpTransceiverInit alloc];
+
+  if (direction != nil) {
+    init.direction = [self stringToTransceiverDirection:direction];
+  }
+
+  if (streamIds != nil) {
+    init.streamIds = streamIds;
+  }
+
+  if (encodingsParams != nil) {
+    NSMutableArray<RTCRtpEncodingParameters*>* sendEncodings = [[NSMutableArray alloc] init];
+    for (NSDictionary* map in encodingsParams) {
+      [sendEncodings addObject:[self mapToEncoding:map]];
+    }
+    [init setSendEncodings:sendEncodings];
+  }
+  return init;
+}
+
+- (RTCRtpMediaType)stringToRtpMediaType:(NSString*)type {
+  if ([type isEqualToString:@"audio"]) {
+    return RTCRtpMediaTypeAudio;
+  } else if ([type isEqualToString:@"video"]) {
+    return RTCRtpMediaTypeVideo;
+  } else if ([type isEqualToString:@"data"]) {
+    return RTCRtpMediaTypeData;
+  }
+  return RTCRtpMediaTypeAudio;
+}
+
+- (RTCRtpTransceiverDirection)stringToTransceiverDirection:(NSString*)type {
+  if ([type isEqualToString:@"sendrecv"]) {
+    return RTCRtpTransceiverDirectionSendRecv;
+  } else if ([type isEqualToString:@"sendonly"]) {
+    return RTCRtpTransceiverDirectionSendOnly;
+  } else if ([type isEqualToString:@"recvonly"]) {
+    return RTCRtpTransceiverDirectionRecvOnly;
+  } else if ([type isEqualToString:@"inactive"]) {
+    return RTCRtpTransceiverDirectionInactive;
+  }
+  return RTCRtpTransceiverDirectionInactive;
+}
+
 #pragma mark - createPeerConnection(照抄 darwin handleMethodCall)
 
 - (void)createPeerConnection:(NSDictionary*)configuration
@@ -868,6 +972,17 @@ void webrtc_factory_destroy(webrtc_handle factory) {
   // 单例常驻
 }
 
+/* 注册 factory 级事件回调(设备热插拔 onDeviceChange / 桌源增删改名等)。
+ * 存进单例, postFactoryEvent 按需派发; 注册后立即补发一次 onDeviceChange(对齐 win/linux)。 */
+int webrtc_factory_set_event_cb(webrtc_handle factory, webrtc_event_cb cb,
+                                void* user_data) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  p.factoryEventCb = cb;
+  p.factoryEventUd = user_data;
+  [p postFactoryEvent:@{@"event" : @"onDeviceChange"}];
+  return 0;
+}
+
 webrtc_handle webrtc_create_peer_connection(webrtc_handle factory,
                                             const char* configuration_json,
                                             const char* constraints_json,
@@ -958,6 +1073,15 @@ int webrtc_select_audio_input(webrtc_handle factory, const char* device_id) {
   return ok;
 }
 
+int webrtc_select_audio_output(webrtc_handle factory, const char* device_id) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  __block int ok = 0;
+  [p selectAudioOutput:WebrtcCString(device_id) result:^(id r) {
+    ok = [r isKindOfClass:[WebrtcError class]] ? 0 : 1;
+  }];
+  return ok;
+}
+
 char* webrtc_create_local_media_stream(webrtc_handle factory) {
   WebrtcPlugin* p = WebrtcPluginSingleton();
   __block NSDictionary* out = nil;
@@ -1021,6 +1145,27 @@ int webrtc_media_stream_remove_track(webrtc_handle factory, const char* stream_i
     [stream removeVideoTrack:(RTCVideoTrack*)track];
   }
   return 1;
+}
+
+/* 开/关轨道(enabled), 0 成功(照 darwin MediaStreamTrack.setEnabled:)。 */
+int webrtc_media_stream_track_set_enable(webrtc_handle factory, const char* track_id,
+                                         int enabled) {
+  if (!track_id) return -1;
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  RTCMediaStreamTrack* track = [p trackForId:WebrtcCString(track_id) peerConnectionId:nil];
+  if (!track) return -1;
+  track.enabled = (enabled != 0);
+  return 0;
+}
+
+/* 设置音频轨道音量(0.0~1.0), 0 成功(照 darwin setVolume, 走 RTCAudioSource.volume)。 */
+int webrtc_track_set_volume(webrtc_handle factory, const char* track_id, double volume) {
+  if (!track_id) return -1;
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  RTCMediaStreamTrack* track = [p trackForId:WebrtcCString(track_id) peerConnectionId:nil];
+  if (!track || ![track isKindOfClass:[RTCAudioTrack class]]) return -1;
+  ((RTCAudioTrack*)track).source.volume = volume;
+  return 0;
 }
 
 void webrtc_pc_close(webrtc_handle pc) {
@@ -1168,6 +1313,415 @@ void webrtc_pc_get_stats(webrtc_handle pc, const char* track_id,
   }
 }
 
+/* ---- 主控/发送方补充 + 状态查询: 补齐 webrtc.h 里 dart 已绑定但此前缺实现的 _pc_* ----
+ * 语义对照 win/linux C ABI 基线 + 照抄 darwin FlutterWebRTCPlugin.m 对应方法。 */
+
+void webrtc_pc_create_offer(webrtc_handle pc, const char* constraints_json,
+                            webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  [plugin peerConnectionCreateOffer:WebrtcParseJson(constraints_json) ?: @{}
+                    peerConnection:p
+                            result:WebrtcResultMake(user_data, cb)];
+}
+
+void webrtc_pc_get_local_description(webrtc_handle pc,
+                                     webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  [plugin peerConnectionGetLocalDescription:p result:WebrtcResultMake(user_data, cb)];
+}
+
+void webrtc_pc_get_remote_description(webrtc_handle pc,
+                                      webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  [plugin peerConnectionGetRemoteDescription:p result:WebrtcResultMake(user_data, cb)];
+}
+
+/* AddTransceiver(照抄 darwin addTransceiver): track_id 非空走 track 重载,
+ * 否则按 media_type; init_json 经 mapToTransceiverInit 解码。 */
+char* webrtc_pc_add_transceiver(webrtc_handle pc, const char* track_id,
+                                const char* media_type, const char* init_json) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCMediaStreamTrack* track =
+      track_id ? [plugin trackForId:WebrtcCString(track_id) peerConnectionId:nil] : nil;
+  NSDictionary* initDict = init_json ? WebrtcParseJson(init_json) : nil;
+  RTCRtpTransceiver* transceiver = nil;
+  if (track) {
+    if (initDict) {
+      transceiver = [p addTransceiverWithTrack:track
+                                          init:[plugin mapToTransceiverInit:initDict]];
+    } else {
+      transceiver = [p addTransceiverWithTrack:track];
+    }
+  } else if (media_type) {
+    RTCRtpMediaType rtpMediaType = [plugin stringToRtpMediaType:WebrtcCString(media_type)];
+    if (initDict) {
+      transceiver = [p addTransceiverOfType:rtpMediaType
+                                       init:[plugin mapToTransceiverInit:initDict]];
+    } else {
+      transceiver = [p addTransceiverOfType:rtpMediaType];
+    }
+  }
+  if (!transceiver) return NULL;
+  NSDictionary* out = [plugin transceiverToMap:transceiver];
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_get_receivers(webrtc_handle pc) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  NSMutableArray* receivers = [NSMutableArray array];
+  for (RTCRtpReceiver* receiver in p.receivers) {
+    [receivers addObject:[plugin receiverToMap:receiver]];
+  }
+  NSDictionary* out = @{@"receivers" : receivers};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+/* rtpSenderSetTrack(照抄 darwin): track_id 空 -> 传 nil 清空; 否则按 localTracks 取。 */
+void webrtc_pc_sender_set_track(webrtc_handle pc, const char* sender_id,
+                                const char* track_id,
+                                webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  WebrtcResult result = WebrtcResultMake(user_data, cb);
+  RTCRtpSender* sender = [plugin getRtpSenderById:p Id:WebrtcCString(sender_id)];
+  if (!sender) {
+    result([WebrtcError errorWithCode:@"rtpSenderSetTrackFailed"
+                              message:@"Error: sender not found!" details:nil]);
+    return;
+  }
+  RTCMediaStreamTrack* track = nil;
+  if (track_id && track_id[0]) {
+    track = [plugin trackForId:WebrtcCString(track_id) peerConnectionId:nil];
+    if (!track) {
+      result([WebrtcError errorWithCode:@"rtpSenderSetTrackFailed"
+                                message:@"Error: track not found!" details:nil]);
+      return;
+    }
+  }
+  [sender setTrack:track];
+  result(nil);
+}
+
+/* rtpSenderSetStreams(照抄 darwin): stream_ids_json 是 JSON 数组。 */
+void webrtc_pc_sender_set_stream(webrtc_handle pc, const char* sender_id,
+                                 const char* stream_ids_json,
+                                 webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  WebrtcResult result = WebrtcResultMake(user_data, cb);
+  RTCRtpSender* sender = [plugin getRtpSenderById:p Id:WebrtcCString(sender_id)];
+  if (!sender) {
+    result([WebrtcError errorWithCode:@"rtpSenderSetStreamsFailed"
+                              message:@"Error: sender not found!" details:nil]);
+    return;
+  }
+  NSArray* ids = [NSJSONSerialization JSONObjectWithData:
+                              [NSData dataWithBytes:stream_ids_json
+                                             length:strlen(stream_ids_json ?: "")]
+                                              options:0 error:nil];
+  if (![ids isKindOfClass:[NSArray class]]) ids = @[];
+  [sender setStreamIds:ids];
+  result(nil);
+}
+
+/* rtpTransceiverStop / GetCurrentDirection / SetDirection(照抄 darwin 同名方法)。 */
+void webrtc_pc_transceiver_stop(webrtc_handle pc, const char* transceiver_id,
+                                webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  WebrtcResult result = WebrtcResultMake(user_data, cb);
+  RTCRtpTransceiver* transceiver = [plugin getRtpTransceiverById:p
+                                                             Id:WebrtcCString(transceiver_id)];
+  if (!transceiver) {
+    result([WebrtcError errorWithCode:@"rtpTransceiverStopFailed"
+                              message:@"Error: transceiver not found!" details:nil]);
+    return;
+  }
+  [transceiver stopInternal];
+  result(nil);
+}
+
+void webrtc_pc_transceiver_get_current_direction(
+    webrtc_handle pc, const char* transceiver_id, webrtc_result_cb cb,
+    void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  WebrtcResult result = WebrtcResultMake(user_data, cb);
+  RTCRtpTransceiver* transcevier = [plugin getRtpTransceiverById:p
+                                                             Id:WebrtcCString(transceiver_id)];
+  if (!transcevier) {
+    result([WebrtcError errorWithCode:@"rtpTransceiverGetCurrentDirectionFailed"
+                              message:@"Error: transceiver not found!" details:nil]);
+    return;
+  }
+  RTCRtpTransceiverDirection directionOut = transcevier.direction;
+  if ([transcevier currentDirection:&directionOut]) {
+    result(@{@"result" : [plugin transceiverDirectionString:directionOut]});
+  } else {
+    result(nil);
+  }
+}
+
+void webrtc_pc_transceiver_set_direction(
+    webrtc_handle pc, const char* transceiver_id, const char* direction,
+    webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  WebrtcResult result = WebrtcResultMake(user_data, cb);
+  RTCRtpTransceiver* transcevier = [plugin getRtpTransceiverById:p
+                                                             Id:WebrtcCString(transceiver_id)];
+  if (!transcevier) {
+    result([WebrtcError errorWithCode:@"rtpTransceiverSetDirectionFailed"
+                              message:@"Error: transceiver not found!" details:nil]);
+    return;
+  }
+  [transcevier setDirection:[plugin stringToTransceiverDirection:WebrtcCString(direction)]
+                      error:nil];
+  result(nil);
+}
+
+/* SetConfiguration: 与 win/linux 对齐(参考实现本身即 TODO, 仅成功返回)。
+ * 有合法配置时仍先落地 peerConnectionSetConfiguration。 */
+void webrtc_pc_set_configuration(webrtc_handle pc, const char* configuration_json,
+                                 webrtc_result_cb cb, void* user_data) {
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  NSDictionary* configDict = WebrtcParseJson(configuration_json);
+  if (configDict) {
+    [plugin peerConnectionSetConfiguration:[plugin RTCConfiguration:configDict]
+                           peerConnection:p];
+  }
+  WebrtcResult result = WebrtcResultMake(user_data, cb);
+  result(nil);
+}
+
+/* ---- 媒体流/ICE重启/DTMF/状态查询(对齐 win/linux webrtc.cc) ----
+ * addStream/removeStream 在 plugin.localStreams 按 stream_id 查流; 返回 0 成功/-1 失败。 */
+int webrtc_pc_add_stream(webrtc_handle pc, const char* stream_id) {
+  if (!pc || !stream_id) return -1;
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCMediaStream* stream = plugin.localStreams[WebrtcCString(stream_id)];
+  if (!stream) return -1;
+  [p addStream:stream];
+  return 0;
+}
+
+int webrtc_pc_remove_stream(webrtc_handle pc, const char* stream_id) {
+  if (!pc || !stream_id) return -1;
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCMediaStream* stream = plugin.localStreams[WebrtcCString(stream_id)];
+  if (!stream) return -1;
+  [p removeStream:stream];
+  return 0;
+}
+
+void webrtc_pc_restart_ice(webrtc_handle pc) {
+  if (!pc) return;
+  [(__bridge RTCPeerConnection*)pc restartIce];
+}
+
+/* DTMF: duration/gap 单位毫秒(按 win/linux), InsertDtmf 收秒(照 darwin 的 /1000.0)。 */
+int webrtc_pc_sender_can_insert_dtmf(webrtc_handle pc, const char* sender_id) {
+  if (!pc || !sender_id) return 0;
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCRtpSender* sender = [plugin getRtpSenderById:p Id:WebrtcCString(sender_id)];
+  if (!sender || !sender.dtmfSender) return 0;
+  return sender.dtmfSender.canInsertDtmf ? 1 : 0;
+}
+
+int webrtc_pc_sender_insert_dtmf(webrtc_handle pc, const char* sender_id,
+                                 const char* tones, int duration, int gap) {
+  if (!pc || !sender_id || !tones) return 0;
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCRtpSender* sender = [plugin getRtpSenderById:p Id:WebrtcCString(sender_id)];
+  if (!sender || !sender.dtmfSender) return 0;
+  return [sender.dtmfSender insertDtmf:WebrtcCString(tones)
+                              duration:duration / 1000.0
+                          interToneGap:gap / 1000.0] ? 1 : 0;
+}
+
+/* 状态同步查询 -> {"state":"..."}(对齐 win/linux), 失败返回 NULL。 */
+char* webrtc_pc_get_signaling_state(webrtc_handle pc) {
+  if (!pc) return NULL;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  NSDictionary* out =
+      @{@"state" : [plugin stringForSignalingState:p.signalingState] ?: @""};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_get_ice_gathering_state(webrtc_handle pc) {
+  if (!pc) return NULL;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  NSDictionary* out =
+      @{@"state" : [plugin stringForICEGatheringState:p.iceGatheringState] ?: @""};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_get_ice_connection_state(webrtc_handle pc) {
+  if (!pc) return NULL;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  NSDictionary* out =
+      @{@"state" : [plugin stringForICEConnectionState:p.iceConnectionState] ?: @""};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+char* webrtc_pc_get_connection_state(webrtc_handle pc) {
+  if (!pc) return NULL;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  NSDictionary* out =
+      @{@"state" : [plugin stringForPeerConnectionState:p.connectionState] ?: @""};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
+}
+
+/* ---- E2EE 帧加密: 对应 mac/include/webrtc.h 的 frame_cryptor/key_provider 段 ----
+ * createFrameCryptor 以 pc 句柄为第一参数, 其余以 factory 句柄 + constraints_json。
+ * 与 win/linux C ABI 同名同签名、同 JSON 边界(字节数组是 JSON 数字数组)。
+ * 状态事件经 factory 事件回调上报: {"event":"frameCryptionStateChanged",...} */
+
+// 纯 JSON 进 → JSON 出的 frameCryptor/keyProvider 方法共用此包装(业务方法都同步回调)
+static char* WebrtcFrameCryptorCall(WebrtcPlugin* p, const char* constraints_json,
+                                    void (^call)(WebrtcPlugin*, NSDictionary*, WebrtcResult)) {
+  NSDictionary* outDict = WebrtcParseJson(constraints_json) ?: @{};
+  __block NSDictionary* out = nil;
+  call(p, outDict, ^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  });
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_frame_cryptor_factory_create_frame_cryptor(webrtc_handle pc,
+                                                        const char* constraints_json) {
+  NSDictionary* outDict = WebrtcParseJson(constraints_json) ?: @{};
+  RTCPeerConnection* peerConnection = (__bridge RTCPeerConnection*)pc;
+  __block NSDictionary* out = nil;
+  [WebrtcPluginSingleton() frameCryptorFactoryCreateFrameCryptor:outDict
+                                                  peerConnection:peerConnection
+                                                         result:^(id r) {
+                                                           if (![r isKindOfClass:[WebrtcError class]]) out = r;
+                                                         }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_frame_cryptor_set_key_index(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p frameCryptorSetKeyIndex:c result:result];
+      });
+}
+
+char* webrtc_frame_cryptor_get_key_index(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p frameCryptorGetKeyIndex:c result:result];
+      });
+}
+
+char* webrtc_frame_cryptor_set_enabled(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p frameCryptorSetEnabled:c result:result];
+      });
+}
+
+char* webrtc_frame_cryptor_get_enabled(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p frameCryptorGetEnabled:c result:result];
+      });
+}
+
+char* webrtc_frame_cryptor_dispose(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p frameCryptorDispose:c result:result];
+      });
+}
+
+char* webrtc_frame_cryptor_factory_create_key_provider(webrtc_handle factory,
+                                                       const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p frameCryptorFactoryCreateKeyProvider:c result:result];
+      });
+}
+
+char* webrtc_key_provider_set_shared_key(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderSetSharedKey:c result:result];
+      });
+}
+
+char* webrtc_key_provider_ratchet_shared_key(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderRatchetSharedKey:c result:result];
+      });
+}
+
+char* webrtc_key_provider_export_shared_key(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderExportSharedKey:c result:result];
+      });
+}
+
+char* webrtc_key_provider_set_key(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderSetKey:c result:result];
+      });
+}
+
+char* webrtc_key_provider_ratchet_key(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderRatchetKey:c result:result];
+      });
+}
+
+char* webrtc_key_provider_export_key(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderExportKey:c result:result];
+      });
+}
+
+char* webrtc_key_provider_set_sif_trailer(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderSetSifTrailer:c result:result];
+      });
+}
+
+char* webrtc_key_provider_dispose(webrtc_handle factory, const char* constraints_json) {
+  return WebrtcFrameCryptorCall(WebrtcPluginSingleton(), constraints_json,
+      ^(WebrtcPlugin* p, NSDictionary* c, WebrtcResult result) {
+        [p keyProviderDispose:c result:result];
+      });
+}
+
 char* webrtc_get_sys_audio_media(webrtc_handle factory, const char* params_json) {
   WebrtcPlugin* p = WebrtcPluginSingleton();
   NSDictionary* params = WebrtcParseJson(params_json) ?: @{};
@@ -1206,6 +1760,22 @@ char* webrtc_get_desktop_sources(webrtc_handle factory, const char* types_json) 
   if (![types isKindOfClass:[NSArray class]]) types = @[];
   __block NSDictionary* out = nil;
   [p getDesktopSources:@{@"types" : types} result:^(id r) {
+    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+  }];
+  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                        encoding:NSUTF8StringEncoding] : nil);
+}
+
+/* updateDesktopSources: 不强制重载的源列表刷新(照抄 WebrtcRTCDesktopCapturer.mm)。
+ * 源增删/改名经 factory 事件回调上报。返回 {"result":true}, 失败 NULL。 */
+char* webrtc_update_desktop_sources(webrtc_handle factory, const char* types_json) {
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSArray* types = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:types_json
+                                                                        length:strlen(types_json ?: "")]
+                                                   options:0 error:nil];
+  if (![types isKindOfClass:[NSArray class]]) types = @[];
+  __block NSDictionary* out = nil;
+  [p updateDesktopSources:@{@"types" : types} result:^(id r) {
     if (![r isKindOfClass:[WebrtcError class]]) out = r;
   }];
   return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
