@@ -13,7 +13,14 @@ RTCRtpParameters rtpParametersFromMap(Map<dynamic, dynamic> map) {
       .map((e) => RTCHeaderExtension.fromMap(e as Map<dynamic, dynamic>))
       .toList();
   params.encodings = (map['encodings'] as List<dynamic>? ?? [])
-      .map((e) => RTCRtpEncoding.fromMap(e as Map<dynamic, dynamic>))
+      .map((e) {
+        // parson 用 %1.17g 序列化, 1.0 会写成 "1" → Dart 解成 int,
+        // 而 interface 的 RTCRtpEncoding.scaleResolutionDownBy 是 double?, 直接进 fromMap 会崩
+        final m = Map<dynamic, dynamic>.from(e as Map);
+        final scale = m['scaleResolutionDownBy'];
+        if (scale is int) m['scaleResolutionDownBy'] = scale.toDouble();
+        return RTCRtpEncoding.fromMap(m);
+      })
       .toList();
   params.codecs = (map['codecs'] as List<dynamic>? ?? [])
       .map((e) => RTCRTPCodec.fromMap(e as Map<dynamic, dynamic>))

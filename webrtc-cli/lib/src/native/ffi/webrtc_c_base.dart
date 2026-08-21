@@ -314,14 +314,23 @@ class EventBus {
   static final Map<int, EventHandler> _handlers = {};
   static int _nextIndex = 1;
 
-  // 事件回调(NativeCallable.listener, 可被任意线程调用)
+  // C 侧异步回调传的堆拷贝用这个释放
+  static final _lib = loadWebrtcLibrary();
+  static final _freeString = _lib
+      .lookupFunction<_FreeStringNative, _FreeStringDart>('webrtc_free_string');
+
+  // 事件回调(NativeCallable.listener, 可被任意线程调用)。
+  // C 侧回调可能是 webrtc 线程异步触发的, 跨线程会被编组到本 isolate 延迟执行,
+  // 所以 C 侧传的都是 StrDup/malloc 的堆拷贝, 这里读完必须 webrtc_free_string 释放。
   static void _onEvent(Pointer<Void> userData, Pointer<Utf8> eventJson,
       Pointer<Uint8> binary, int binaryLen) {
     final index = userData.address;
     final json = eventJson.toDartString();
+    _freeString(eventJson);
     if (binary != nullptr && binaryLen > 0) {
-      // 回调内复制原始字节, 之后 signaling 线程 buffer 即失效
+      // 复制原始字节后释放 C 侧堆拷贝
       final bytes = Uint8List.fromList(binary.asTypedList(binaryLen));
+      _freeString(binary.cast<Utf8>());
       _port.sendPort.send([index, json, bytes]);
     } else {
       _port.sendPort.send([index, json]);
@@ -333,21 +342,26 @@ class EventBus {
       Pointer<Void> userData, int err, Pointer<Utf8> json) {
     final index = userData.address;
     final jsonStr = json == nullptr ? '' : json.toDartString();
+    if (json != nullptr) _freeString(json);
     _port.sendPort.send([index, err, jsonStr]);
   }
 
+  // 应用自身(测试 main / server 主循环)保活 isolate, FFI 库不钉住它,
+  // 否则 dispose() 后进程退不出去(在 init() 里把 keepIsolateAlive 置 false)。
   static final NativeCallable<EventCallbackNative> eventCallable =
       NativeCallable<EventCallbackNative>.listener(_onEvent);
   static final NativeCallable<ResultCallbackNative> resultCallable =
-      NativeCallable<ResultCallbackNative>.listener(
-          _onResult);
+      NativeCallable<ResultCallbackNative>.listener(_onResult);
 
   static bool _initialized = false;
+  static StreamSubscription<dynamic>? _sub;
 
   static void init() {
     if (_initialized) return;
     _initialized = true;
-    _port.listen((dynamic message) {
+    eventCallable.keepIsolateAlive = false;
+    resultCallable.keepIsolateAlive = false;
+    _sub = _port.listen((dynamic message) {
       final List<dynamic> data = message as List<dynamic>;
       final index = data[0] as int;
       final handler = _handlers[index];
@@ -389,6 +403,16 @@ class EventBus {
 
   static Pointer<Void> userDataFor(int index) =>
       Pointer<Void>.fromAddress(index);
+
+  /// 关闭事件总线(进程退出时随 dispose 调用): 释放保活 isolate 的
+  /// port 订阅和 NativeCallable, 否则测试/server 退出时进程会挂住。
+  static void close() {
+    _sub?.cancel();
+    _sub = null;
+    eventCallable.close();
+    resultCallable.close();
+    _initialized = false;
+  }
 }
 
 // ================= 库加载 =================
@@ -408,6 +432,7 @@ DynamicLibrary loadWebrtcLibrary() {
       '../lib/webrtc_c.dll',
       './lib/webrtc_c.dll',
       'windows/runner/webrtc_c.dll',
+      r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\build_vs\Release\webrtc_c.dll',
       r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\build_vs\Debug\webrtc_c.dll',
       r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\cmake-build-debug\webrtc_c.dll',
       r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\cmake-build-release\webrtc_c.dll',
@@ -474,9 +499,10 @@ Future<Map<String, dynamic>> asyncResult(void Function(int index) invoke) {
     EventBus.unregister(index);
     try {
       final map = decodeJson(json);
-      if ((map['err'] as int?) != 0) {
-        completer.completeError(
-            Exception(map['err'] ?? 'async call failed'));
+      // C 侧成功结果没有 "err" 键({"sdp":...,"type":...} 或 "{}"), 失败才是 {"err":N}
+      final err = map['err'];
+      if (err is int && err != 0) {
+        completer.completeError(Exception(err));
       } else {
         completer.complete(map);
       }

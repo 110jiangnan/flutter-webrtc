@@ -12,10 +12,8 @@ Future<void> main(List<String> args) async {
       final packageName = input.packageName;
       var list = [
         '../third_party/libwebrtc/lib/win64/libwebrtc.dll',
-        '../third_party/libwebrtc/lib/win64/libwebrtc.dll.lib',
-        '../third_party/libwebrtc/webrtc-c/build_vs/Debug/webrtc_c.dll',
-        '../third_party/libwebrtc/webrtc-c/build_vs/Debug/webrtc_c.lib',
-        '../third_party/libwebrtc/webrtc-c/build_vs/Debug/webrtc_c.pdb',
+        '../third_party/libwebrtc/webrtc-c/build_vs/Release/webrtc_c.dll',
+        '../third_party/libwebrtc/webrtc-c/build_vs/Release/webrtc_c.lib',
       ];
 
       for(var item in list) {

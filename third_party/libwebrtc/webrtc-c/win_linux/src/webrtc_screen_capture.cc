@@ -169,7 +169,7 @@ void WebrtcScreenCapture::FireDesktopEvent(const std::string& event,
   evt.obj.emplace_back("event", MakeStr(event));
   for (auto& kv : body.obj) evt.obj.push_back(kv);
   std::string json = ToJson(evt);
-  base_->factory_event_cb_(base_->factory_event_ud_, json.c_str(), nullptr, 0);
+  base_->factory_event_cb_(base_->factory_event_ud_, StrDup(json), nullptr, 0);
 }
 
 void WebrtcScreenCapture::OnMediaSourceAdded(scoped_refptr<MediaSource> source) {

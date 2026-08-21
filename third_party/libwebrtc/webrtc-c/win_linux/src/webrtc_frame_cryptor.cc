@@ -41,7 +41,7 @@ void WebrtcFrameCryptorObserver::OnFrameCryptionStateChanged(
       {"participantId", MakeStr(participant_id.std_string())},
       {"state", MakeStr(FrameCryptionStateToString(state))},
   }));
-  base_->factory_event_cb_(base_->factory_event_ud_, json.c_str(), nullptr, 0);
+  base_->factory_event_cb_(base_->factory_event_ud_, StrDup(json), nullptr, 0);
 }
 
 std::vector<uint8_t> WebrtcFrameCryptor::BytesOf(const JNode& v) {

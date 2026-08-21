@@ -1,5 +1,7 @@
 #include "webrtc_data_channel.h"
 
+#include <cstring>
+
 #include "rtc_data_channel.h"
 
 #include "webrtc_peerconnection.h"
@@ -33,6 +35,14 @@ WebrtcDataChannelObserver::~WebrtcDataChannelObserver() {
 void WebrtcDataChannelObserver::SetCallback(webrtc_event_cb cb, void* ud) {
   cb_ = cb;
   ud_ = ud;
+  // 远端通道可能在 Dart attach()(即本函数)注册回调之前就已 Open, 那次
+  // OnStateChange 事件会因 cb_==null 被丢; 这里仅在已 Open 时补发一次。
+  // 事件经 NativeCallable 异步编组回 Dart, 会比 didOpenDataChannel 的
+  // onDataChannel 回调晚到, 应用层 handler 此时已就位。本地通道此刻还是
+  // connecting/closed, 不会命中 Open 分支, 等真实状态事件即可。
+  if (cb_ && data_channel_->state() == RTCDataChannelOpen) {
+    OnStateChange(RTCDataChannelOpen);
+  }
 }
 
 void WebrtcDataChannelObserver::OnStateChange(RTCDataChannelState state) {
@@ -42,7 +52,8 @@ void WebrtcDataChannelObserver::OnStateChange(RTCDataChannelState state) {
       {"id", MakeNum(data_channel_->id())},
       {"state", MakeStr(DataStateString(state))},
   }));
-  cb_(ud_, json.c_str(), nullptr, 0);
+  // 异步回调: 栈上字符串会被回收, 传堆拷贝, Dart 侧 webrtc_free_string 释放
+  cb_(ud_, StrDup(json), nullptr, 0);
 }
 
 void WebrtcDataChannelObserver::OnMessage(const char* buffer, int length,
@@ -54,9 +65,16 @@ void WebrtcDataChannelObserver::OnMessage(const char* buffer, int length,
       {"type", MakeStr(binary ? "binary" : "text")},
       {"data", MakeStr(binary ? "" : std::string(buffer, length))},
   }));
-  cb_(ud_, json.c_str(),
-      binary ? reinterpret_cast<const uint8_t*>(buffer) : nullptr,
-      binary ? length : 0);
+  // json 和 binary 都要堆拷贝: 回调从 webrtc 线程异步编组到 Dart isolate 时才执行,
+  // 届时源 buffer 已失效。Dart 侧读后统一 webrtc_free_string 释放。
+  uint8_t* binary_copy = nullptr;
+  if (binary && length > 0) {
+    binary_copy = static_cast<uint8_t*>(malloc(length));
+    memcpy(binary_copy, buffer, length);
+  }
+  cb_(ud_, StrDup(json),
+      binary_copy,
+      binary && length > 0 ? length : 0);
 }
 
 WebrtcDataChannel::WebrtcDataChannel(WebrtcBase* base) : base_(base) {}

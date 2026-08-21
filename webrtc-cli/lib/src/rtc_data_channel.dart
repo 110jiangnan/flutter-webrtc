@@ -8,7 +8,9 @@ import 'native/ffi/webrtc_c.dart';
 
 /// 镜像 rtc_data_channel_impl.dart 的 RTCDataChannelNative。
 class RTCDataChannelFfi extends RTCDataChannel {
-  RTCDataChannelFfi(this._id, this._label, this.flutterId) {
+  RTCDataChannelFfi(this._id, this._label, this.flutterId,
+      [RTCDataChannelState? initialState])
+      : _state = initialState {
     _stateChangeController =
         StreamController<RTCDataChannelState>.broadcast(sync: true);
     _messageController =
@@ -17,9 +19,11 @@ class RTCDataChannelFfi extends RTCDataChannel {
     messageStream = _messageController.stream;
   }
 
-  factory RTCDataChannelFfi.fromMap(Map<dynamic, dynamic> map) =>
+  factory RTCDataChannelFfi.fromMap(Map<dynamic, dynamic> map,
+          {RTCDataChannelState? state}) =>
       RTCDataChannelFfi((map['id'] as num?)?.toInt() ?? 0,
-          map['label'] as String? ?? '', map['flutterId'] as String? ?? '');
+          map['label'] as String? ?? '', map['flutterId'] as String? ?? '',
+          state);
 
   final int _id;
   final String _label;

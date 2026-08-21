@@ -503,7 +503,7 @@ void WebrtcMediaStream::OnDeviceChange() {
   audio_device->OnDeviceChange([base = base_]() {
     if (base->factory_event_cb_) {
       base->factory_event_cb_(base->factory_event_ud_,
-                              "{\"event\":\"onDeviceChange\"}", nullptr, 0);
+                              StrDup("{\"event\":\"onDeviceChange\"}"), nullptr, 0);
     }
   });
 }

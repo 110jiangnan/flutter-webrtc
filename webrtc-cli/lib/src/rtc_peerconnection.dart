@@ -138,7 +138,10 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
         }
         break;
       case 'didOpenDataChannel':
-        final dc = RTCDataChannelFfi.fromMap(map);
+        // 与 flutter-webrtc 对齐: 远端通道出现即视为 Open, 否则在等
+        // dataChannelStateChanged 时可能因通道已提前 Open 而永久收不到状态事件
+        final dc = RTCDataChannelFfi.fromMap(map,
+            state: RTCDataChannelState.RTCDataChannelOpen);
         dc.attach();
         onDataChannel?.call(dc);
         break;

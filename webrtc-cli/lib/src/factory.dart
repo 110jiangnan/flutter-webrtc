@@ -241,4 +241,5 @@ Future<int> selectAudioInput(String deviceId) async {
 /// 释放全局 factory(进程退出时调用)
 Future<void> dispose() async {
   WebrtcRuntime.instance.dispose();
+  EventBus.close();
 }

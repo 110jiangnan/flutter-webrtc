@@ -13,8 +13,7 @@ Future<void> smokeApplicationUsage() async {
       .getDisplayMedia(<String, dynamic>{'video': true});
 
   // desktopCapturer.getSources
-  final sources =
-      await desktopCapturer.getSources(types: [SourceType.Screen]);
+  final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
   for (final s in sources) {
     // ignore: avoid_print
     print('${s.id} ${s.name} ${s.thumbnailSize.toMap()}');

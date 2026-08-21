@@ -410,7 +410,9 @@ void CppPcObserver::Fire(const std::string& event, const JNode& body) {
   evt.obj.emplace_back("event", MakeStr(event));
   for (auto& kv : body.obj) evt.obj.push_back(kv);
   std::string json = ToJson(evt);
-  cb_(ud_, json.c_str(), nullptr, 0);
+  // 回调可能被 webrtc 线程异步触发(NativeCallable.listener 跨线程会编组到 Dart isolate,
+  // 栈上 std::string 在回调真正执行时已析构), 必须传堆拷贝, Dart 侧用 webrtc_free_string 释放
+  cb_(ud_, StrDup(json), nullptr, 0);
 }
 
 void CppPcObserver::OnIceCandidate(scoped_refptr<RTCIceCandidate> candidate) {
@@ -630,7 +632,7 @@ void WebrtcPeerConnection::CreateOffer(const JNode& constraints,
       [cb, ud](const string sdp, const string type) {
         std::string json = ToJson(MakeObj({{"sdp", MakeStr(sdp.std_string())},
                                            {"type", MakeStr(type.std_string())}}));
-        cb(ud, 0, json.c_str());
+        cb(ud, 0, StrDup(json));
       },
       [cb, ud](const char* error) { cb(ud, -1, nullptr); }, media_constraints);
 }
@@ -649,7 +651,7 @@ void WebrtcPeerConnection::CreateAnswer(const JNode& constraints,
       [cb, ud](const string sdp, const string type) {
         std::string json = ToJson(MakeObj({{"sdp", MakeStr(sdp.std_string())},
                                            {"type", MakeStr(type.std_string())}}));
-        cb(ud, 0, json.c_str());
+        cb(ud, 0, StrDup(json));
       },
       [cb, ud](const char* error) { cb(ud, -1, nullptr); }, media_constraints);
 }
@@ -687,7 +689,7 @@ void WebrtcPeerConnection::GetLocalDescription(webrtc_handle pc,
       [cb, ud](const char* sdp, const char* type) {
         std::string json = ToJson(MakeObj({{"sdp", MakeStr(sdp ? sdp : "")},
                                            {"type", MakeStr(type ? type : "")}}));
-        cb(ud, 0, json.c_str());
+        cb(ud, 0, StrDup(json));
       },
       [cb, ud](const char* error) { cb(ud, -1, nullptr); });
 }
@@ -700,7 +702,7 @@ void WebrtcPeerConnection::GetRemoteDescription(webrtc_handle pc,
       [cb, ud](const char* sdp, const char* type) {
         std::string json = ToJson(MakeObj({{"sdp", MakeStr(sdp ? sdp : "")},
                                            {"type", MakeStr(type ? type : "")}}));
-        cb(ud, 0, json.c_str());
+        cb(ud, 0, StrDup(json));
       },
       [cb, ud](const char* error) { cb(ud, -1, nullptr); });
 }
@@ -838,7 +840,7 @@ void WebrtcPeerConnection::RtpTransceiverGetCurrentDirection(
   std::string json = ToJson(MakeObj({
       {"result", MakeStr(TransceiverDirectionString(transceiver->current_direction()))},
   }));
-  cb(ud, 0, json.c_str());
+  cb(ud, 0, StrDup(json));
 }
 
 // ---- SetConfiguration(参考实现本身即 TODO, 这里仅成功返回) ----
@@ -944,7 +946,7 @@ void WebrtcPeerConnection::GetStats(webrtc_handle pc, const char* track_id,
     result.type = JNode::kObj;
     result.obj.emplace_back("stats", std::move(list));
     std::string json = ToJson(result);
-    cb(ud, 0, json.c_str());
+    cb(ud, 0, StrDup(json));
   };
   auto failure = [cb, ud](const char* error) { cb(ud, -1, nullptr); };
 
