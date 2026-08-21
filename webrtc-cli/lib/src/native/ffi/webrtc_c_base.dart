@@ -405,6 +405,8 @@ DynamicLibrary loadWebrtcLibrary() {
     'webrtc_c.dll',
     if (Platform.isWindows) ...[
       'webrtc_c.dll',
+      '../lib/webrtc_c.dll',
+      './lib/webrtc_c.dll',
       'windows/runner/webrtc_c.dll',
       r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\build_vs\Debug\webrtc_c.dll',
       r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\cmake-build-debug\webrtc_c.dll',
