@@ -27,7 +27,300 @@ part 'webrtc_c_datachannel.dart';
 part 'webrtc_c_desktop.dart';
 part 'webrtc_c_framecryptor.dart';
 
-/// 底层 FFI 的对外门面。
+// ================= C 回调签名 =================
+typedef EventCallbackNative = Void Function(
+    Pointer<Void> userData, Pointer<Utf8> eventJson);
+typedef ResultCallbackNative = Void Function(
+    Pointer<Void> userData, Int32 err, Pointer<Utf8> json);
+
+// ================= C 函数签名(与 webrtc.h 一一对应) =================
+typedef _FactoryCreateNative = Pointer<Void> Function();
+typedef _FactoryDestroyNative = Void Function(Pointer<Void> factory);
+typedef _CreatePeerConnectionNative = Pointer<Void> Function(
+    Pointer<Void> factory,
+    Pointer<Utf8> configurationJson,
+    Pointer<Utf8> constraintsJson,
+    Pointer<NativeFunction<EventCallbackNative>> onEvent,
+    Pointer<Void> userData);
+typedef _PcDestroyNative = Void Function(Pointer<Void> pc);
+typedef _PcCloseNative = Void Function(Pointer<Void> pc);
+typedef _GetUserMediaNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> mediaConstraintsJson);
+typedef _StreamDisposeNative = Void Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId);
+typedef _GetSourcesNative = Pointer<Utf8> Function(Pointer<Void> factory);
+typedef _SelectAudioInputNative = Int32 Function(
+    Pointer<Void> factory, Pointer<Utf8> deviceId);
+typedef _CreateLocalMediaStreamNative =
+    Pointer<Utf8> Function(Pointer<Void> factory);
+typedef _MediaStreamGetTracksNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId);
+typedef _MediaStreamDisposeNative = Void Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId);
+typedef _MediaStreamTrackDisposeNative = Void Function(
+    Pointer<Void> factory, Pointer<Utf8> trackId);
+typedef _MediaStreamAddTrackNative = Int32 Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId, Pointer<Utf8> trackId);
+typedef _MediaStreamRemoveTrackNative = Int32 Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId, Pointer<Utf8> trackId);
+typedef _PcCreateAnswerNative = Void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> constraintsJson,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _PcSetLocalDescriptionNative = Void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> sdp,
+    Pointer<Utf8> type,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _PcSetRemoteDescriptionNative = Void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> sdp,
+    Pointer<Utf8> type,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _PcAddIceCandidateNative = Int32 Function(
+    Pointer<Void> pc, Pointer<Utf8> candidateJson);
+typedef _PcAddTrackNative = Pointer<Utf8> Function(
+    Pointer<Void> pc, Pointer<Utf8> trackId, Pointer<Utf8> streamId);
+typedef _PcRemoveTrackNative = Pointer<Utf8> Function(
+    Pointer<Void> pc, Pointer<Utf8> senderId);
+typedef _PcGetSendersNative = Pointer<Utf8> Function(Pointer<Void> pc);
+typedef _PcGetTransceiversNative = Pointer<Utf8> Function(Pointer<Void> pc);
+typedef _PcSenderSetParametersNative = Pointer<Utf8> Function(
+    Pointer<Void> pc, Pointer<Utf8> senderId, Pointer<Utf8> paramsJson);
+typedef _PcTransceiverSetCodecPreferencesNative = Void Function(
+    Pointer<Void> pc, Pointer<Utf8> transceiverId, Pointer<Utf8> codecsJson);
+typedef _PcGetStatsNative = Void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> trackId,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _GetSysAudioMediaNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> paramsJson);
+typedef _ReleaseSysAudioMediaNative = Void Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId);
+typedef _GetDesktopSourcesNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> typesJson);
+typedef _GetDisplayMediaNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> constraintsJson);
+typedef _FactoryGetRtpSenderCapsNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> kind);
+typedef _FactoryGetRtpReceiverCapsNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> kind);
+typedef _EnableSysAudioPcmNative = Int32 Function(
+    Pointer<Void> factory, Int32 enable, Pointer<Utf8> filePath);
+typedef _EnableSysAudioPcmDart = int Function(
+    Pointer<Void> factory, int enable, Pointer<Utf8> filePath);
+typedef _CreateDataChannelNative = Pointer<Utf8> Function(
+    Pointer<Void> pc, Pointer<Utf8> label, Pointer<Utf8> initJson);
+typedef _DataChannelSetCallbackNative = Int32 Function(
+    Pointer<Void> factory,
+    Pointer<Utf8> flutterId,
+    Pointer<NativeFunction<EventCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _DataChannelSendNative = Int32 Function(
+    Pointer<Void> factory,
+    Pointer<Utf8> flutterId,
+    Int32 isBinary,
+    Pointer<Uint8> data,
+    Int32 len);
+typedef _DataChannelBufferedAmountNative = Pointer<Utf8> Function(
+    Pointer<Void> factory, Pointer<Utf8> flutterId);
+typedef _DataChannelCloseNative = Void Function(
+    Pointer<Void> factory, Pointer<Utf8> flutterId);
+typedef _FreeStringNative = Void Function(Pointer<Utf8> s);
+
+// Int32 返回的 Dart 侧签名(int 而非 Int32)
+typedef _SelectAudioInputDart = int Function(
+    Pointer<Void> factory, Pointer<Utf8> deviceId);
+typedef _MediaStreamAddTrackDart = int Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId, Pointer<Utf8> trackId);
+typedef _MediaStreamRemoveTrackDart = int Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId, Pointer<Utf8> trackId);
+typedef _PcAddIceCandidateDart = int Function(
+    Pointer<Void> pc, Pointer<Utf8> candidateJson);
+typedef _DataChannelSetCallbackDart = int Function(
+    Pointer<Void> factory,
+    Pointer<Utf8> flutterId,
+    Pointer<NativeFunction<EventCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _DataChannelSendDart = int Function(
+    Pointer<Void> factory,
+    Pointer<Utf8> flutterId,
+    int isBinary,
+    Pointer<Uint8> data,
+    int len);
+
+// Void 返回的 Dart 侧签名(void 而非 dart:ffi 的 Void)
+typedef _FactoryDestroyDart = void Function(Pointer<Void> factory);
+typedef _PcDestroyDart = void Function(Pointer<Void> pc);
+typedef _PcCloseDart = void Function(Pointer<Void> pc);
+typedef _StreamDisposeDart = void Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId);
+typedef _MediaStreamDisposeDart = void Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId);
+typedef _MediaStreamTrackDisposeDart = void Function(
+    Pointer<Void> factory, Pointer<Utf8> trackId);
+typedef _PcCreateAnswerDart = void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> constraintsJson,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _PcSetLocalDescriptionDart = void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> sdp,
+    Pointer<Utf8> type,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _PcSetRemoteDescriptionDart = void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> sdp,
+    Pointer<Utf8> type,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _PcTransceiverSetCodecPreferencesDart = void Function(
+    Pointer<Void> pc, Pointer<Utf8> transceiverId, Pointer<Utf8> codecsJson);
+typedef _PcGetStatsDart = void Function(
+    Pointer<Void> pc,
+    Pointer<Utf8> trackId,
+    Pointer<NativeFunction<ResultCallbackNative>> cb,
+    Pointer<Void> userData);
+typedef _ReleaseSysAudioMediaDart = void Function(
+    Pointer<Void> factory, Pointer<Utf8> streamId);
+typedef _DataChannelCloseDart = void Function(
+    Pointer<Void> factory, Pointer<Utf8> flutterId);
+typedef _FreeStringDart = void Function(Pointer<Utf8> s);
+
+// ================= 事件总线 =================
+
+/// 跨线程事件分发: 事件回调 → SendPort → 主 isolate → 按 index 路由到 handler。
+class _EventBus {
+  static final ReceivePort _port = ReceivePort();
+  static final Map<int, void Function(String json)> _handlers = {};
+  static int _nextIndex = 1;
+
+  // 事件回调(NativeCallable.listener, 可被任意线程调用)
+  static void _onEvent(Pointer<Void> userData, Pointer<Utf8> eventJson) {
+    final index = userData.address;
+    final json = eventJson.toDartString();
+    _port.sendPort.send([index, json]);
+  }
+
+  // 异步结果回调(err==0 成功)
+  static void _onResult(
+      Pointer<Void> userData, int err, Pointer<Utf8> json) {
+    final index = userData.address;
+    final jsonStr = json == nullptr ? '' : json.toDartString();
+    _port.sendPort.send([index, err, jsonStr]);
+  }
+
+  static final NativeCallable<EventCallbackNative> eventCallable =
+      NativeCallable<EventCallbackNative>.listener(_onEvent);
+  static final NativeCallable<ResultCallbackNative> resultCallable =
+      NativeCallable<ResultCallbackNative>.listener(
+          _onResult);
+
+  static bool _initialized = false;
+
+  static void init() {
+    if (_initialized) return;
+    _initialized = true;
+    _port.listen((dynamic message) {
+      final List<dynamic> data = message as List<dynamic>;
+      final index = data[0] as int;
+      final handler = _handlers[index];
+      if (handler == null) return;
+      if (data.length == 2) {
+        handler(data[1] as String);
+      } else {
+        // 异步结果: err, json
+        final err = data[1] as int;
+        final json = data[2] as String;
+        handler(json.isEmpty ? '{"err":$err}' : json);
+      }
+    });
+  }
+
+  static int register(void Function(String json) handler) {
+    final index = reserve();
+    bind(index, handler);
+    return index;
+  }
+
+  /// 先占一个索引(createPeerConnection 的 user_data 需要先于对象创建), 稍后 bind。
+  static int reserve() {
+    init();
+    return _nextIndex++;
+  }
+
+  static void bind(int index, void Function(String json) handler) {
+    _handlers[index] = handler;
+  }
+
+  static void unregister(int index) {
+    _handlers.remove(index);
+  }
+
+  static Pointer<Void> userDataFor(int index) =>
+      Pointer<Void>.fromAddress(index);
+}
+
+// ================= 库加载 =================
+
+DynamicLibrary _loadLibrary() {
+  final override = Platform.environment['WEBRTC_C_LIB'];
+  if (override != null && override.isNotEmpty) {
+    _preloadLibwebrtc(_dirOf(override));
+    return DynamicLibrary.open(override);
+  }
+
+  final candidates = <String>[
+    // 当前目录 / 可执行文件旁
+    'webrtc_c.dll',
+    if (Platform.isWindows) ...[
+      'webrtc_c.dll',
+      '../lib/webrtc_c.dll',
+      './lib/webrtc_c.dll',
+      'windows/runner/webrtc_c.dll',
+      r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\build_vs\Debug\webrtc_c.dll',
+      r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\build_vs\Release\webrtc_c.dll',
+      r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\cmake-build-debug\webrtc_c.dll',
+      r'E:\game\MyDesk\MyDesk\flutter-webrtc\third_party\libwebrtc\webrtc-c\cmake-build-release\webrtc_c.dll',
+    ],
+  ];
+  for (final path in candidates) {
+    try {
+      // 先加载同目录的 libwebrtc.dll(webrtc_c.dll 依赖它, 加载器不搜 DLL 所在目录)
+      _preloadLibwebrtc(_dirOf(path));
+      return DynamicLibrary.open(path);
+    } catch (_) {
+      // 继续尝试
+    }
+  }
+  throw StateError('webrtc_c.dll 加载失败, 可用环境变量 WEBRTC_C_LIB 指定路径');
+}
+
+String _dirOf(String path) {
+  final a = path.lastIndexOf('/');
+  final b = path.lastIndexOf('\\');
+  final i = a > b ? a : b;
+  return i >= 0 ? path.substring(0, i) : '.';
+}
+
+void _preloadLibwebrtc(String dir) {
+  final libwebrtc = '$dir${Platform.pathSeparator}libwebrtc.dll';
+  try {
+    DynamicLibrary.open(libwebrtc);
+  } catch (_) {
+    // libwebrtc 不在同目录时忽略, 由 PATH 决定
+  }
+}
+
+// ================= 高一层: JSON 字符串跨边界 =================
+
+/// FFI 桥: 每个方法负责 Utf8 <-> Dart String 转换 + malloc 字符串释放。
 class WebrtcC {
   WebrtcC._();
 
