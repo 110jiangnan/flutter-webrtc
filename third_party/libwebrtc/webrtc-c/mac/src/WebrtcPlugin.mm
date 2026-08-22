@@ -224,10 +224,47 @@ static WebrtcPlugin* sharedInstance_;
                                      severity:nil];
 }
 
+// 照抄 darwin initLoggerCallback:severity:, 事件改走 factory 级 C 回调(onLogData)
+- (void)initLoggerCallback:(RTCLoggingSeverity)severity {
+  if (loggerCallback == nil) {
+    loggerCallback = [RTCCallbackLogger new];
+    [loggerCallback start:^(NSString* logMessage) {
+      [self postFactoryEvent:@{
+        @"event" : @"onLogData",
+        @"data" : logMessage
+      }];
+    }];
+  }
+  loggerCallback.severity = severity;
+}
+
+// 照抄 darwin str2LogSeverity:, 未知/nil 默认 RTCLoggingSeverityNone
+- (RTCLoggingSeverity)str2LogSeverity:(NSString*)str {
+  if ([@"verbose" isEqualToString:str]) {
+    return RTCLoggingSeverityVerbose;
+  } else if ([@"info" isEqualToString:str]) {
+    return RTCLoggingSeverityInfo;
+  } else if ([@"warning" isEqualToString:str]) {
+    return RTCLoggingSeverityWarning;
+  } else if ([@"error" isEqualToString:str]) {
+    return RTCLoggingSeverityError;
+  } else if ([@"none" isEqualToString:str]) {
+    return RTCLoggingSeverityNone;
+  }
+  return RTCLoggingSeverityNone;
+}
+
 - (void)initializeFactoryWithNetworkIgnoreMask:(NSArray*)networkIgnoreMask
                          bypassVoiceProcessing:(BOOL)bypassVoiceProcessing
                                       severity:(NSString*)severityStr {
   if (!_peerConnectionFactory) {
+    // 对齐 darwin initWithChannel: 的 RTCInitFieldTrialDictionary(网络路径行为)
+    NSDictionary* fieldTrials = @{kRTCFieldTrialUseNWPathMonitor : kRTCFieldTrialEnabledValue};
+    RTCInitFieldTrialDictionary(fieldTrials);
+
+    // 对齐 darwin initialize:severity: 的日志回调(onLogData 走 factory 事件回调)
+    [self initLoggerCallback:[self str2LogSeverity:severityStr]];
+
     VideoDecoderFactory* decoderFactory = [[VideoDecoderFactory alloc] init];
     VideoEncoderFactory* encoderFactory = [[VideoEncoderFactory alloc] init];
     VideoEncoderFactorySimulcast* simulcastFactory =
@@ -262,6 +299,9 @@ static WebrtcPlugin* sharedInstance_;
       }
     }
     [_peerConnectionFactory setOptions:options];
+
+    // 对齐 darwin: 观察音频设备模块事件(设备热插拔 onDeviceChange)
+    _peerConnectionFactory.audioDeviceModule.observer = self;
 
     _emptyPcFactory = [_peerConnectionFactory copySharedField];
     [_emptyPcFactory setEmptyAdm];
@@ -849,103 +889,10 @@ static WebrtcPlugin* sharedInstance_;
   if (peerConnectionId) self.peerConnections[peerConnectionId] = pc;
 }
 
-#pragma mark - RTCPeerConnectionDelegate(事件转发到 C ABI)
-
-- (void)peerConnection:(RTCPeerConnection*)peerConnection
-    didChangeSignalingState:(RTCSignalingState)stateChanged {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onSignalingStateChange",
-    @"state" : [self stringForSignalingState:stateChanged],
-  }];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection didAddStream:(RTCMediaStream*)stream {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onAddStream",
-    @"streamId" : stream.streamId,
-  }];
-  if (stream.videoTracks.count > 0) {
-    // 简化: webrtc-cli 使用 onTrack 为主, onAddStream 仅透传 streamId
-  }
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection didRemoveStream:(RTCMediaStream*)stream {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onRemoveStream",
-    @"streamId" : stream.streamId,
-  }];
-}
-- (void)peerConnectionShouldNegotiate:(RTCPeerConnection*)peerConnection {
-  [peerConnection.webrtcEventCallback post:@{@"event" : @"onRenegotiationNeeded"}];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection
-    didChangeIceConnectionState:(RTCIceConnectionState)newState {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onIceConnectionStateChange",
-    @"state" : [self stringForICEConnectionState:newState],
-  }];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection
-    didChangeIceGatheringState:(RTCIceGatheringState)newState {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onIceGatheringStateChange",
-    @"state" : [self stringForICEGatheringState:newState],
-  }];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection
-    didGenerateIceCandidate:(RTCIceCandidate*)candidate {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onIceCandidate",
-    @"candidate" : @{
-      @"candidate" : candidate.sdp,
-      @"sdpMid" : candidate.sdpMid,
-      @"sdpMLineIndex" : @(candidate.sdpMLineIndex),
-    },
-  }];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection
-    didRemoveIceCandidates:(NSArray<RTCIceCandidate*>*)candidates {
-  NSMutableArray* arr = [NSMutableArray array];
-  for (RTCIceCandidate* c in candidates) {
-    [arr addObject:@{
-      @"candidate" : c.sdp,
-      @"sdpMid" : c.sdpMid,
-      @"sdpMLineIndex" : @(c.sdpMLineIndex),
-    }];
-  }
-  [peerConnection.webrtcEventCallback post:@{@"event" : @"onIceCandidateRemoved", @"candidates" : arr}];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection
-    didOpenDataChannel:(RTCDataChannel*)dataChannel {
-  NSString* dataChannelId = [NSString stringWithFormat:@"%@_%@", dataChannel.peerConnectionId,
-                                                           dataChannel.label];
-  NSDictionary* dataChannelEvent = @{
-    @"event" : @"didOpenDataChannel",
-    @"id" : dataChannel.channelId >= 0 ? @(dataChannel.channelId) : [NSNull null],
-    @"label" : dataChannel.label,
-    @"ordered" : @(dataChannel.isOrdered),
-    @"protocol" : dataChannel.protocol ? dataChannel.protocol : @"",
-    @"flutterId" : dataChannel.flutterChannelId ? dataChannel.flutterChannelId : (id)[NSNull null],
-  };
-  [peerConnection.webrtcEventCallback post:dataChannelEvent];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection didChangeConnectionState:(RTCPeerConnectionState)newState {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onConnectionStateChange",
-    @"state" : [self stringForPeerConnectionState:newState],
-  }];
-}
-- (void)peerConnection:(RTCPeerConnection*)peerConnection
-    didAddReceiver:(RTCRtpReceiver*)rtpReceiver
-           streams:(NSArray<RTCMediaStream*>*)mediaStreams {
-  [peerConnection.webrtcEventCallback post:@{
-    @"event" : @"onTrack",
-    @"track" : [self mediaTrackToMap:rtpReceiver.track],
-    @"receiver" : [self receiverToMap:rtpReceiver],
-    @"streams" : @[
-      @{@"streamId" : mediaStreams.firstObject.streamId ?: @""}
-    ],
-  }];
-}
-
+// 注意: RTCPeerConnectionDelegate 方法统一由 WebrtcRTCPeerConnection.mm 的 category
+// (WebrtcPlugin (RTCPeerConnection)) 实现, 事件名对齐 win/linux C ABI
+// (signalingState/iceConnectionState/iceGatheringState/onCandidate/peerConnectionState 等)。
+// 不要在这里重复实现 —— ObjC 主类方法会覆盖 category, 若重复则事件名错误、Dart 无法解析。
 @end
 
 #pragma mark - C ABI 入口层(extern "C")
@@ -1170,7 +1117,11 @@ int webrtc_track_set_volume(webrtc_handle factory, const char* track_id, double 
 
 void webrtc_pc_close(webrtc_handle pc) {
   if (!pc) return;
-  [(__bridge RTCPeerConnection*)pc close];
+  RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
+  WebrtcPlugin* plugin = WebrtcPluginSingleton();
+  // 走 category 的 peerConnectionClose(照抄 darwin): close + 清理
+  // remoteStreams/remoteTracks/dataChannels
+  [plugin peerConnectionClose:p];
 }
 
 void webrtc_pc_create_answer(webrtc_handle pc, const char* constraints_json,

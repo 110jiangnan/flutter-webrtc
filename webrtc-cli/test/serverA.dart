@@ -77,19 +77,19 @@ class ServerA {
       _log('A', '麦克风采集失败: $e');
     }
 
-    // 4. 采集摄像头 — 暂时禁用: 本机 libwebrtc DirectShow 摄像头
-    //    (sink_filter_ds.cc:735) 在线程检查处致命崩溃, 与本机 OBS 虚拟摄像头
-    //    等设备相关。libwebrtc 侧修好后取消注释。
-    // try {
-    //   _camStream = await getUserMedia({'audio': false, 'video': true});
-    //   _log('A', '摄像头采集成功 streamId=${_camStream!.id}');
-    //   for (final t in _camStream!.getVideoTracks()) {
-    //     _log('A', '  摄像头视频轨: ${t.id} ${t.kind}');
-    //     _pc!.addTrack(t, _camStream!);
-    //   }
-    // } catch (e) {
-    //   _log('A', '摄像头采集失败: $e');
-    // }
+    // 4. 采集摄像头 — 已启用: 之前崩是因为运行时加载了 debug 版 libwebrtc
+    //    (sink_filter_ds.cc:735 DCHECK 线程检查, OBS 虚拟摄像头跨线程投递)。
+    //    换 release 构建(DCHECK 编译掉)后不再崩。
+    try {
+      _camStream = await getUserMedia({'audio': false, 'video': true});
+      _log('A', '摄像头采集成功 streamId=${_camStream!.id}');
+      for (final t in _camStream!.getVideoTracks()) {
+        _log('A', '  摄像头视频轨: ${t.id} ${t.kind}');
+        _pc!.addTrack(t, _camStream!);
+      }
+    } catch (e) {
+      _log('A', '摄像头采集失败: $e');
+    }
 
     // 5. 系统音频(被控端)
     try {

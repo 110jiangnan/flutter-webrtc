@@ -24,10 +24,15 @@
   long currentDiff = INT_MAX;
   for (AVCaptureDeviceFormat* format in formats) {
     CMVideoDimensions dimension = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    FourCharCode pixelFormat = CMFormatDescriptionGetMediaSubType(format.formatDescription);
     long diff = labs(targetWidth - dimension.width) + labs(targetHeight - dimension.height);
     if (diff < currentDiff) {
       selectedFormat = format;
       currentDiff = diff;
+    } else if (diff == currentDiff &&
+               pixelFormat == [self.videoCapturer preferredOutputPixelFormat]) {
+      // 对齐 darwin: 分辨率差距相同时优先与 capturer 匹配的像素格式
+      selectedFormat = format;
     }
   }
   return selectedFormat;

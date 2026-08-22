@@ -164,6 +164,8 @@ static NSArray<RTCDesktopSource*>* _captureSources;
     }];
   }
   result(@{@"sources" : sources});
+#else
+  result([WebrtcError errorWithCode:@"ERROR" message:@"Not supported on iOS" details:nil]);
 #endif
 }
 
