@@ -59,6 +59,53 @@ Future<void> connectPeers(ServerA a, ClientB b) async {
   }
 }
 
+/// 连接 ServerA 和 ClientB 的系统音频专用 PC(isSysAudio)。
+/// mac 上系统音频必须走独立 PC(emptyPcFactory), 不能与麦克风混到普通 PC。
+Future<void> connectSysAudioPeers(ServerA a, ClientB b) async {
+  if (!a.hasSysAudioPc || !b.hasSysAudioPc) {
+    _log('--- 系统音频 PC 未创建, 跳过 ---');
+    return;
+  }
+  _log('--- 开始系统音频 SDP/ICE 交换 ---');
+
+  // A 系统音频 offer → A setLocal → B setRemote
+  final offer = await a.createSysAudioOffer();
+  await a.setSysAudioLocalDescription(offer);
+  await b.setSysAudioRemoteDescription(offer);
+
+  // 交换 A 的 candidates
+  await a.waitSysAudioIceGathering().timeout(const Duration(seconds: 15), onTimeout: () {});
+  await Future.delayed(const Duration(milliseconds: 300));
+  _log('A 系统音频收集 ${a.sysAudioPendingCandidates.length} 个 candidates');
+  for (final c in a.sysAudioPendingCandidates) {
+    await b.addSysAudioRemoteCandidate(c);
+  }
+
+  // B answer → B setLocal → A setRemote
+  final answer = await b.createSysAudioAnswer();
+  await b.setSysAudioLocalDescription(answer);
+  await a.setSysAudioRemoteDescription(answer);
+
+  // 交换 B 的 candidates
+  await b.waitSysAudioIceGathering().timeout(const Duration(seconds: 15), onTimeout: () {});
+  await Future.delayed(const Duration(milliseconds: 300));
+  _log('B 系统音频收集 ${b.sysAudioPendingCandidates.length} 个 candidates');
+  for (final c in b.sysAudioPendingCandidates) {
+    await a.addSysAudioRemoteCandidate(c);
+  }
+
+  // 等待系统音频连接建立
+  try {
+    await Future.any([
+      Future.wait([a.waitSysAudioConnected(), b.waitSysAudioConnected()]),
+      Future.delayed(const Duration(seconds: 20)),
+    ]);
+    _log('系统音频连接建立阶段结束');
+  } catch (_) {
+    _log('系统音频连接等待超时');
+  }
+}
+
 /// 测试 DataChannel 双向收发: 字符串 + 二进制。
 Future<void> testDataChannel(ServerA a, ClientB b) async {
   _log('--- 开始 DataChannel 测试 ---');
@@ -138,6 +185,8 @@ Future<void> runRound(int round) async {
 
     // 2. 连接
     await connectPeers(a, b);
+    // 系统音频独立 PC 连接
+    await connectSysAudioPeers(a, b);
     _printMemory();
 
     // 3. DataChannel 测试

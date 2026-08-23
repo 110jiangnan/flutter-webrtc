@@ -59,7 +59,8 @@ Future<void> main() async {
       a.sendBinary(chunk);
       sentTotal += chunk.length;
     }
-    await Future.delayed(const Duration(milliseconds: 2));
+    // 10ms: mac 上 2ms 让出不够, B 的 ReceivePort 会被 A 的发送循环饿死
+    await Future.delayed(const Duration(milliseconds: 10));
   }
   _log('持续发送结束, A 共发送 ${(sentTotal / 1024 / 1024).toStringAsFixed(1)}MB,'
       ' B 收到二进制: ${b.dcBinaryReceived.length} 条'

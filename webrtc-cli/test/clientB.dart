@@ -22,6 +22,13 @@ class ClientB {
   bool _connected = false;
   Completer<void>? _connectDone;
 
+  // 接收系统音频的独立 PC(普通 factory; 接收端不涉及 custom source 推帧, 无需 isSysAudio)
+  RTCPeerConnection? _sysAudioPc;
+  final List<RTCIceCandidate> sysAudioPendingCandidates = [];
+  Completer<void>? _sysAudioIceGatherDone;
+  Completer<void>? _sysAudioConnectDone;
+  bool _sysAudioConnected = false;
+
   // DataChannel 消息日志
   final List<String> dcMessagesReceived = [];
   final List<Uint8List> dcBinaryReceived = [];
@@ -45,6 +52,17 @@ class ClientB {
     _pc!.onTrack = _onTrack;
     _pc!.onAddStream = _onAddStream;
     _pc!.onRemoveStream = _onRemoveStream;
+
+    // 系统音频接收 PC
+    _sysAudioPc = await createPeerConnection({
+      'iceServers': [
+        {'urls': 'stun:stun.l.google.com:19302'},
+      ],
+    });
+    _sysAudioPc!.onIceCandidate = _onSysAudioIceCandidate;
+    _sysAudioPc!.onIceGatheringState = _onSysAudioIceGatheringState;
+    _sysAudioPc!.onIceConnectionState = _onSysAudioIceConnectionState;
+    _log('B', '系统音频接收 PC 已创建');
 
     _log('B', '=== 接收端初始化完成 ===');
   }
@@ -75,6 +93,59 @@ class ClientB {
 
   Future<void> waitIceGathering() => _iceGatherDone?.future ?? Future.value();
   Future<void> waitConnected() => _connectDone?.future ?? Future.value();
+
+  /// 是否创建了系统音频接收 PC
+  bool get hasSysAudioPc => _sysAudioPc != null;
+
+  // ---- 系统音频接收 PC ----
+
+  Future<void> setSysAudioRemoteDescription(RTCSessionDescription desc) async {
+    _sysAudioConnectDone = Completer<void>();
+    await _sysAudioPc!.setRemoteDescription(desc);
+    _log('B', '系统音频 RemoteDescription 已设置');
+  }
+
+  Future<RTCSessionDescription> createSysAudioAnswer() async {
+    final answer = await _sysAudioPc!.createAnswer();
+    _log('B', '系统音频 Answer 已创建');
+    return answer;
+  }
+
+  Future<void> setSysAudioLocalDescription(RTCSessionDescription desc) async {
+    _sysAudioIceGatherDone = Completer<void>();
+    await _sysAudioPc!.setLocalDescription(desc);
+    _log('B', '系统音频 LocalDescription 已设置');
+  }
+
+  Future<void> addSysAudioRemoteCandidate(RTCIceCandidate c) async {
+    await _sysAudioPc!.addCandidate(c);
+    _log('B',
+        '系统音频已添加远端 candidate: ${c.candidate?.substring(0, (c.candidate?.length ?? 0).clamp(0, 60))}...');
+  }
+
+  Future<void> waitSysAudioIceGathering() =>
+      _sysAudioIceGatherDone?.future ?? Future.value();
+
+  Future<void> waitSysAudioConnected() =>
+      _sysAudioConnectDone?.future ?? Future.value();
+
+  void _onSysAudioIceCandidate(RTCIceCandidate candidate) {
+    sysAudioPendingCandidates.add(candidate);
+  }
+
+  void _onSysAudioIceGatheringState(RTCIceGatheringState state) {
+    if (state == RTCIceGatheringState.RTCIceGatheringStateComplete) {
+      _sysAudioIceGatherDone?.complete();
+    }
+  }
+
+  void _onSysAudioIceConnectionState(RTCIceConnectionState state) {
+    if (state == RTCIceConnectionState.RTCIceConnectionStateConnected &&
+        !_sysAudioConnected) {
+      _sysAudioConnected = true;
+      _sysAudioConnectDone?.complete();
+    }
+  }
 
   Future<void> sendDcString(String text) async {
     if (_dc == null) {
@@ -228,8 +299,16 @@ class ClientB {
       _log('B', 'PeerConnection 已释放');
     }
 
+    if (_sysAudioPc != null) {
+      try { await _sysAudioPc!.close(); } catch (_) {}
+      try { await _sysAudioPc!.dispose(); } catch (_) {}
+      _sysAudioPc = null;
+      _log('B', '系统音频 PC 已释放');
+    }
+
     _remoteStreams.clear();
     pendingCandidates.clear();
+    sysAudioPendingCandidates.clear();
     _connected = false;
     _log('B', '=== 接收端资源释放完成 ===');
   }

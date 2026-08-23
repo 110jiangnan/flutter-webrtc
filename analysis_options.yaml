@@ -46,3 +46,11 @@ analyzer:
     constant_identifier_names: ignore
     deprecated_member_use: ignore
     implementation_imports: ignore
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**

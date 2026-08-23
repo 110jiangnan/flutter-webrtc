@@ -35,3 +35,4 @@ third_party/libwebrtc/webrtc-c/build_vs
 third_party/libwebrtc/webrtc-c/cmake-build-debug
 third_party/libwebrtc/webrtc-c/cmake-build-release
 third_party/libwebrtc/webrtc-c/build_win
+third_party/libwebrtc/webrtc-c/build_mac

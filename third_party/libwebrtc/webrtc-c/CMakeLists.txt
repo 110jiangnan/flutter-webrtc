@@ -42,6 +42,8 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
 elseif(APPLE)
   # mac 独立整套 ObjC: 不复用 win/linux 的 C++ 源码
+  # 启用 OBJCXX 语言(编译 .mm 源必需); project() 只启了 C/CXX
+  enable_language(OBJCXX)
   list(APPEND WEBRTC_C_SOURCES
     mac/src/WebrtcPlugin.mm
     mac/src/WebrtcRTCPeerConnection.mm
@@ -100,6 +102,8 @@ if(WIN32)
   )
 elseif(APPLE)
   # macOS: 链接 WebRTC.xcframework (路径可用 -DWEBRTC_MAC_FRAMEWORK= 覆盖)
+  # 照抄 darwin Pod 的 CLANG_ENABLE_OBJC_ARC=YES; 不开则 __weak/__strong 全报错
+  target_compile_options(webrtc_c PRIVATE -fobjc-arc)
   set(WEBRTC_MAC_FRAMEWORK
       "${WEBRTC_MAC_FRAMEWORK}")
   if(NOT WEBRTC_MAC_FRAMEWORK)

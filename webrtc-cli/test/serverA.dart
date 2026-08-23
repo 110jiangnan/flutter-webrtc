@@ -13,6 +13,14 @@ class ServerA {
   MediaStream? _micStream;
   MediaStream? _camStream;
   MediaStream? _sysAudioStream;
+  // 系统音频必须用 isSysAudio=true 的专用 PC(emptyPcFactory 创建)。
+  // mac 上 custom source 的流归属 emptyPcFactory 的 AudioState; 若混到普通 PC,
+  // 会被麦克风 ADM 广播帧, 与 ScreenCaptureKit 推帧并发 → audio_send_stream.cc:368 race 崩溃。
+  RTCPeerConnection? _sysAudioPc;
+  final List<RTCIceCandidate> sysAudioPendingCandidates = [];
+  Completer<void>? _sysAudioIceGatherDone;
+  Completer<void>? _sysAudioConnectDone;
+  bool _sysAudioConnected = false;
   RTCDataChannel? _dc;
 
   Timer? _statsTimer;
@@ -91,14 +99,24 @@ class ServerA {
       _log('A', '摄像头采集失败: $e');
     }
 
-    // 5. 系统音频(被控端)
+    // 5. 系统音频(被控端) — 用 isSysAudio=true 的专用 PC(emptyPcFactory)
     try {
       _sysAudioStream = await SysAudioManager.getSysAudioMedia();
       _log('A', '系统音频采集成功 streamId=${_sysAudioStream!.id}');
+      _sysAudioPc = await createPeerConnection({
+        'iceServers': [
+          {'urls': 'stun:stun.l.google.com:19302'},
+        ],
+        'isSysAudio': true,
+      });
+      _sysAudioPc!.onIceCandidate = _onSysAudioIceCandidate;
+      _sysAudioPc!.onIceGatheringState = _onSysAudioIceGatheringState;
+      _sysAudioPc!.onIceConnectionState = _onSysAudioIceConnectionState;
       for (final t in _sysAudioStream!.getAudioTracks()) {
         _log('A', '  系统音频轨: ${t.id} ${t.kind}');
-        _pc!.addTrack(t, _sysAudioStream!);
+        _sysAudioPc!.addTrack(t, _sysAudioStream!);
       }
+      _log('A', '系统音频 PC 已创建(isSysAudio=true)');
     } catch (e) {
       _log('A', '系统音频采集失败: $e');
     }
@@ -142,6 +160,59 @@ class ServerA {
 
   /// 等待连接建立
   Future<void> waitConnected() => _connectDone?.future ?? Future.value();
+
+  /// 是否创建了系统音频 PC
+  bool get hasSysAudioPc => _sysAudioPc != null;
+
+  // ---- 系统音频 PC(isSysAudio) ----
+
+  Future<RTCSessionDescription> createSysAudioOffer() async {
+    final offer = await _sysAudioPc!.createOffer();
+    _log('A', '系统音频 Offer 已创建');
+    return offer;
+  }
+
+  Future<void> setSysAudioLocalDescription(RTCSessionDescription desc) async {
+    _sysAudioIceGatherDone = Completer<void>();
+    _sysAudioConnectDone = Completer<void>();
+    await _sysAudioPc!.setLocalDescription(desc);
+    _log('A', '系统音频 LocalDescription 已设置');
+  }
+
+  Future<void> setSysAudioRemoteDescription(RTCSessionDescription desc) async {
+    await _sysAudioPc!.setRemoteDescription(desc);
+    _log('A', '系统音频 RemoteDescription 已设置');
+  }
+
+  Future<void> addSysAudioRemoteCandidate(RTCIceCandidate c) async {
+    await _sysAudioPc!.addCandidate(c);
+    _log('A',
+        '系统音频已添加远端 candidate: ${c.candidate?.substring(0, (c.candidate?.length ?? 0).clamp(0, 60))}...');
+  }
+
+  Future<void> waitSysAudioIceGathering() =>
+      _sysAudioIceGatherDone?.future ?? Future.value();
+
+  Future<void> waitSysAudioConnected() =>
+      _sysAudioConnectDone?.future ?? Future.value();
+
+  void _onSysAudioIceCandidate(RTCIceCandidate candidate) {
+    sysAudioPendingCandidates.add(candidate);
+  }
+
+  void _onSysAudioIceGatheringState(RTCIceGatheringState state) {
+    if (state == RTCIceGatheringState.RTCIceGatheringStateComplete) {
+      _sysAudioIceGatherDone?.complete();
+    }
+  }
+
+  void _onSysAudioIceConnectionState(RTCIceConnectionState state) {
+    if (state == RTCIceConnectionState.RTCIceConnectionStateConnected &&
+        !_sysAudioConnected) {
+      _sysAudioConnected = true;
+      _sysAudioConnectDone?.complete();
+    }
+  }
 
   // ---- DataChannel 发送 ----
 
@@ -278,6 +349,13 @@ class ServerA {
       try { await _pc!.dispose(); } catch (_) {}
       _pc = null;
       _log('A', 'PeerConnection 已释放');
+    }
+
+    if (_sysAudioPc != null) {
+      try { await _sysAudioPc!.close(); } catch (_) {}
+      try { await _sysAudioPc!.dispose(); } catch (_) {}
+      _sysAudioPc = null;
+      _log('A', '系统音频 PC 已释放');
     }
 
     if (_screenStream != null) {

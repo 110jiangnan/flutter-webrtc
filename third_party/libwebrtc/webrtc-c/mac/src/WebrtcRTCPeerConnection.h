@@ -23,6 +23,8 @@
 
 @interface WebrtcPlugin (RTCPeerConnection)
 
+- (void)peerConnectionClose:(nonnull RTCPeerConnection*)peerConnection;
+
 - (void)peerConnectionCreateOffer:(nonnull NSDictionary*)constraints
                    peerConnection:(nonnull RTCPeerConnection*)peerConnection
                            result:(nonnull WebrtcResult)result;

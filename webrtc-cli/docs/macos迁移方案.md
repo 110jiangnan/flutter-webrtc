@@ -1,5 +1,6 @@
 # MacOS 迁移方案（webrtc-cli / webrtc-c 路线）
 
+> **先读 [macos踩坑实录.md](./macos踩坑实录.md)**：mac 首次编译+运行的踩坑与修复速查（OBJCXX/ARC、双重释放、main queue 事件丢失、音频 race 等）。
 > 配套文档：[windowslinux迁移方案.md](./windowslinux迁移方案.md)（win/linux 是 ABI 基准，dart 按它绑定）。三平台迁移规则总览见其 §6 表。
 
 ## 0. 一句话结论

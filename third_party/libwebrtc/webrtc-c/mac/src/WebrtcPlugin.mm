@@ -8,6 +8,9 @@
  */
 #import <Foundation/Foundation.h>
 #import <WebRTC/WebRTC.h>
+#import <WebRTC/RTCFieldTrials.h>
+#import <WebRTC/RTCLogging.h>
+#import <WebRTC/RTCCallbackLogger.h>
 #import <objc/runtime.h>
 
 #import "WebrtcPlugin.h"
@@ -16,6 +19,63 @@
 #import "WebrtcRTCDesktopCapturer.h"
 #import "SysAudioTrackManager.h"
 #import "AudioManager.h"
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wprotocol"
+#pragma clang diagnostic ignored "-Wobjc-protocol-method-implementation"
+
+/* 照抄 darwin: 视频编解码器工厂(提升 H264 profile-level-id 到 5.1) */
+@interface VideoEncoderFactory : RTCDefaultVideoEncoderFactory
+@end
+@interface VideoDecoderFactory : RTCDefaultVideoDecoderFactory
+@end
+@interface VideoEncoderFactorySimulcast : RTCVideoEncoderFactorySimulcast
+@end
+
+static NSArray<RTC_OBJC_TYPE(RTCVideoCodecInfo)*>* motifyH264ProfileLevelId(
+    NSArray<RTC_OBJC_TYPE(RTCVideoCodecInfo)*>* codecs) {
+  NSMutableArray* newCodecs = [[NSMutableArray alloc] init];
+  NSInteger count = codecs.count;
+  for (NSInteger i = 0; i < count; i++) {
+    RTC_OBJC_TYPE(RTCVideoCodecInfo)* info = [codecs objectAtIndex:i];
+    if ([info.name isEqualToString:kRTCVideoCodecH264Name]) {
+      NSString* hexString = info.parameters[@"profile-level-id"];
+      RTCH264ProfileLevelId* profileLevelId = [[RTCH264ProfileLevelId alloc] initWithHexString:hexString];
+      if (profileLevelId.level < RTCH264Level5_1) {
+        RTCH264ProfileLevelId* newProfileLevelId =
+            [[RTCH264ProfileLevelId alloc] initWithProfile:profileLevelId.profile
+                                                      level:RTCH264Level5_1];
+        NSMutableDictionary* parametersCopy = [[NSMutableDictionary alloc] init];
+        [parametersCopy addEntriesFromDictionary:info.parameters];
+        [parametersCopy setObject:[newProfileLevelId hexString] forKey:@"profile-level-id"];
+        [newCodecs insertObject:[[RTCVideoCodecInfo alloc] initWithName:kRTCVideoCodecH264Name
+                                                              parameters:parametersCopy]
+                         atIndex:i];
+      } else {
+        [newCodecs insertObject:info atIndex:i];
+      }
+    } else {
+      [newCodecs insertObject:info atIndex:i];
+    }
+  }
+  return newCodecs;
+}
+
+@implementation VideoEncoderFactory
+- (NSArray<RTC_OBJC_TYPE(RTCVideoCodecInfo)*>*)supportedCodecs {
+  return motifyH264ProfileLevelId([super supportedCodecs]);
+}
+@end
+@implementation VideoDecoderFactory
+- (NSArray<RTC_OBJC_TYPE(RTCVideoCodecInfo)*>*)supportedCodecs {
+  return motifyH264ProfileLevelId([super supportedCodecs]);
+}
+@end
+@implementation VideoEncoderFactorySimulcast
+- (NSArray<RTC_OBJC_TYPE(RTCVideoCodecInfo)*>*)supportedCodecs {
+  return motifyH264ProfileLevelId([super supportedCodecs]);
+}
+@end
 
 #pragma mark - JSON 桥工具
 
@@ -104,13 +164,19 @@ static char* WebrtcMallocString(NSString* __nullable s) {
   const char* cstr = [json UTF8String];
   char* copy = (char*)malloc(strlen(cstr) + 1);
   if (copy) strcpy(copy, cstr);
-  // 块内引用 binary 让 ARC retain 住 NSData, 避免异步派发后 bytes 悬垂
+  // 二进制也 malloc 拷贝: NativeCallable 异步编组时 NSData 可能已释放;
+  // Dart 侧对 binary 也用 webrtc_free_string(free) 释放, 必须是真的 malloc。
   NSData* binData = binary;
-  dispatch_async(dispatch_get_main_queue(), ^{
-    cb(ud, copy, binData ? (const uint8_t*)binData.bytes : NULL,
-       binData ? (int)binData.length : 0);
-    free(copy);
-  });
+  uint8_t* binCopy = NULL;
+  if (binData && binData.length > 0) {
+    binCopy = (uint8_t*)malloc(binData.length);
+    if (binCopy) memcpy(binCopy, binData.bytes, binData.length);
+  }
+  // 直接调 cb(不走 dispatch_get_main_queue): Dart CLI 进程没有主 RunLoop,
+  // main queue 的 block 永不执行, 事件会全部丢失。NativeCallable.listener 自带
+  // 跨线程编组, 在 webrtc 线程直接调即可送达 isolate。
+  // copy/binCopy 所有权转交 Dart 侧, 这里不能 free。
+  cb(ud, copy, binCopy, binData ? (int)binData.length : 0);
 }
 
 - (void)postString:(NSString*)json {
@@ -120,11 +186,8 @@ static char* WebrtcMallocString(NSString* __nullable s) {
   const char* cstr = [json UTF8String];
   char* copy = (char*)malloc(strlen(cstr) + 1);
   if (copy) strcpy(copy, cstr);
-  // darwin 的 postEvent 派发主线程; 事件由 webrtc signaling 线程触发, 保持一致
-  dispatch_async(dispatch_get_main_queue(), ^{
-    cb(ud, copy, NULL, 0);
-    free(copy);
-  });
+  // 同 post:binary:, 直接调 cb, 不走 main queue(Dart CLI 无主 RunLoop)
+  cb(ud, copy, NULL, 0);
 }
 
 @end
@@ -147,8 +210,8 @@ static void WebrtcResultFire(webrtc_result_cb cb, void* ud, int err, id result) 
   const char* cjson = json ? [json UTF8String] : NULL;
   char* copy = cjson ? (char*)malloc(strlen(cjson) + 1) : NULL;
   if (copy) strcpy(copy, cjson);
+  // copy 所有权转交 Dart 侧(异步编组, Dart 读完后 webrtc_free_string 释放)。不能 free。
   cb(ud, err, copy);
-  if (copy) free(copy);
 }
 
 WebrtcResult WebrtcResultMake(void* userData, webrtc_result_cb cb) {
@@ -163,8 +226,7 @@ WebrtcResult WebrtcResultMake(void* userData, webrtc_result_cb cb) {
       const char* m = [msg UTF8String];
       char* copy = (char*)malloc(strlen(m) + 1);
       if (copy) strcpy(copy, m);
-      fcb(fud, 1, copy);
-      if (copy) free(copy);
+      fcb(fud, 1, copy);  // 所有权转交 Dart 侧, 不能 free
       return;
     }
     if (result == nil || result == [NSNull null]) {
@@ -208,6 +270,76 @@ static WebrtcPlugin* sharedInstance_;
 
 - (void)ensureAudioSession {
   // macOS 无 AVAudioSession; darwin 的 ensureAudioSession 为 iOS 专用, 此处空实现
+}
+
+#pragma mark - RTCAudioDeviceModuleDelegate (新框架 9 个必选方法, 全量实现避免 unrecognized selector)
+// 本 xcframework 是 macOS 26.2 SDK 构建, RTCAudioDeviceModuleDelegate 协议已扩展。
+// darwin 只实现 audioDeviceModuleDidUpdateDevices:(旧协议), 这里补齐全部必选方法。
+// 引擎生命周期钩子对 webrtc-cli 无自定义需求, 统一返回 0(成功)。
+
+- (void)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+    didReceiveSpeechActivityEvent:(RTCSpeechActivityEvent)speechActivityEvent {
+  // 无消费方, 忽略
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+               didCreateEngine:(AVAudioEngine*)engine {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+              willEnableEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+               willStartEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+                 didStopEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+              didDisableEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+             willReleaseEngine:(AVAudioEngine*)engine {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+                        engine:(AVAudioEngine*)engine
+      configureInputFromSource:(AVAudioNode*)source
+                 toDestination:(AVAudioNode*)destination
+                    withFormat:(AVAudioFormat*)format
+                       context:(NSDictionary*)context {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+                        engine:(AVAudioEngine*)engine
+     configureOutputFromSource:(AVAudioNode*)source
+                 toDestination:(AVAudioNode*)destination
+                    withFormat:(AVAudioFormat*)format
+                       context:(NSDictionary*)context {
+  return 0;
+}
+
+- (void)audioDeviceModuleDidUpdateDevices:(RTCAudioDeviceModule*)audioDeviceModule {
+  [self postFactoryEvent:@{@"event" : @"onDeviceChange"}];
 }
 
 - (void)postFactoryEvent:(NSDictionary*)event {
@@ -962,15 +1094,29 @@ char* webrtc_get_user_media(webrtc_handle factory, const char* media_constraints
   WebrtcPlugin* p = WebrtcPluginSingleton();
   NSDictionary* c = WebrtcParseJson(media_constraints_json);
   // getUserMedia 需 TCC 权限 + 采集启动, 完成回调异步派发到主队列; 同步等待其完成
+  // 30s 超时: macOS 上 CLI 进程可能弹不出权限对话框, 无限等待会卡死
   __block NSDictionary* out = nil;
+  __block NSString* errMsg = nil;
   dispatch_semaphore_t sem = dispatch_semaphore_create(0);
   [p getUserMedia:c ?: @{} result:^(id r) {
-    if (![r isKindOfClass:[WebrtcError class]]) out = r;
+    if ([r isKindOfClass:[WebrtcError class]]) {
+      errMsg = ((WebrtcError*)r).message;
+    } else {
+      out = r;
+    }
     dispatch_semaphore_signal(sem);
   }];
-  dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-  return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
-                                                        encoding:NSUTF8StringEncoding] : nil);
+  if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) != 0) {
+    errMsg = @"Timed out waiting for getUserMedia (30s)";
+  }
+  if (out) {
+    return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                    encoding:NSUTF8StringEncoding]);
+  }
+  // 失败时返回 JSON 错误对象, 让 dart 侧能解析具体原因
+  NSString* errJson = [NSString stringWithFormat:@"{\"error\":\"%@\"}",
+      errMsg ?: @"getUserMedia failed"];
+  return WebrtcMallocString(errJson);
 }
 
 void webrtc_stream_dispose(webrtc_handle factory, const char* stream_id) {
@@ -1061,7 +1207,6 @@ void webrtc_media_stream_track_dispose(webrtc_handle factory, const char* track_
   WebrtcPlugin* p = WebrtcPluginSingleton();
   NSString* tid = WebrtcCString(track_id);
   id<LocalTrack> track = p.localTracks[tid];
-  if ([track respondsToSelector:@selector(stop)]) [track stop];
   [p.localTracks removeObjectForKey:tid];
 }
 
@@ -1101,7 +1246,7 @@ int webrtc_media_stream_track_set_enable(webrtc_handle factory, const char* trac
   WebrtcPlugin* p = WebrtcPluginSingleton();
   RTCMediaStreamTrack* track = [p trackForId:WebrtcCString(track_id) peerConnectionId:nil];
   if (!track) return -1;
-  track.enabled = (enabled != 0);
+  track.isEnabled = (enabled != 0);
   return 0;
 }
 

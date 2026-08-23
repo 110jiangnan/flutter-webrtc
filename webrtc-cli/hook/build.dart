@@ -10,11 +10,18 @@ Future<void> main(List<String> args) async {
     if (input.config.buildCodeAssets) {
       // 获取当前包的名称（用于资产归属）
       final packageName = input.packageName;
-      var list = [
-        '../third_party/libwebrtc/lib/win64/libwebrtc.dll',
-        '../third_party/libwebrtc/webrtc-c/build_vs/Release/webrtc_c.dll',
-        '../third_party/libwebrtc/webrtc-c/build_vs/Release/webrtc_c.lib',
-      ];
+      var list = <String>[];
+      if (Platform.isWindows) {
+        list = [
+          '../third_party/libwebrtc/lib/win64/libwebrtc.dll',
+          '../third_party/libwebrtc/webrtc-c/build_vs/Release/webrtc_c.dll',
+          '../third_party/libwebrtc/webrtc-c/build_vs/Release/webrtc_c.lib',
+        ];
+      } else if (Platform.isMacOS) {
+        list = [
+          'native/libwebrtc_c.dylib',
+        ];
+      }
 
       for(var item in list) {
         // 检查文件是否存在

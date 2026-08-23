@@ -38,6 +38,9 @@ class MediaDevicesFfi extends MediaDevices {
     if (response == null) {
       throw Exception('getUserMedia return null, something wrong');
     }
+    if (response['error'] != null) {
+      throw Exception('getUserMedia: ${response['error']}');
+    }
     final stream = MediaStreamFfi(response['streamId'] as String, 'local');
     stream.setMediaTracks(response['audioTracks'], response['videoTracks']);
     return stream;

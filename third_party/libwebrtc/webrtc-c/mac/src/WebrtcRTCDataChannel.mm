@@ -7,6 +7,7 @@
  *    mac 直接放 NSData(由 WebrtcEventCallback 序列化为 base64 跨边界)
  */
 #import "WebrtcRTCDataChannel.h"
+#import "WebrtcRTCPeerConnection.h"
 #import <WebRTC/RTCDataChannelConfiguration.h>
 #import <objc/runtime.h>
 

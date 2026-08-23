@@ -4,8 +4,10 @@
  * iOS 分支(#if TARGET_OS_IPHONE 内)在 mac 上被预处理器剔除，保留以保照抄度。
  */
 #import <objc/runtime.h>
+#import <AVFoundation/AVFoundation.h>
 #import "CameraUtils.h"
 #import "WebrtcPlugin.h"
+#import "WebrtcRTCPeerConnection.h"
 #import "VideoProcessingAdapter.h"
 #import "LocalVideoTrack.h"
 #import "LocalAudioTrack.h"
@@ -207,6 +209,49 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
 
 /* getUserMedia:result: —— 对应 C ABI webrtc_get_user_media */
 - (void)getUserMedia:(NSDictionary*)constraints result:(WebrtcResult)result {
+  // macOS 上 CLI 进程不会自动弹出权限对话框, 需要主动请求 TCC 授权
+  BOOL needAudio = constraints[@"audio"] && ![constraints[@"audio"] isEqual:@NO];
+  BOOL needVideo = constraints[@"video"] && ![constraints[@"video"] isEqual:@NO];
+
+  dispatch_group_t authGroup = dispatch_group_create();
+  __block BOOL audioGranted = !needAudio;
+  __block BOOL videoGranted = !needVideo;
+
+  if (needAudio) {
+    AVAuthorizationStatus audioStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+    if (audioStatus == AVAuthorizationStatusAuthorized) {
+      audioGranted = YES;
+    } else if (audioStatus == AVAuthorizationStatusNotDetermined) {
+      dispatch_group_enter(authGroup);
+      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
+        audioGranted = granted;
+        dispatch_group_leave(authGroup);
+      }];
+    }
+  }
+  if (needVideo) {
+    AVAuthorizationStatus videoStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+    if (videoStatus == AVAuthorizationStatusAuthorized) {
+      videoGranted = YES;
+    } else if (videoStatus == AVAuthorizationStatusNotDetermined) {
+      dispatch_group_enter(authGroup);
+      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
+        videoGranted = granted;
+        dispatch_group_leave(authGroup);
+      }];
+    }
+  }
+  dispatch_group_wait(authGroup, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+
+  if (!audioGranted || !videoGranted) {
+    NSString* missing = !audioGranted && !videoGranted ? @"camera and microphone"
+        : !audioGranted ? @"microphone" : @"camera";
+    result([WebrtcError errorWithCode:@"PermissionDenied"
+                              message:[NSString stringWithFormat:@"%@ permission denied", missing]
+                              details:nil]);
+    return;
+  }
+
   NSString* mediaStreamId = [[NSUUID UUID] UUIDString];
   RTCMediaStream* mediaStream = [self.peerConnectionFactory mediaStreamWithStreamId:mediaStreamId];
 
@@ -544,9 +589,8 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
                     errorCallback:(NavigatorUserMediaErrorCallback)errorCallback
                       mediaStream:(RTCMediaStream*)mediaStream {
   if (mediaType == AVMediaTypeVideo && [self captureDevices].count == 0) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      errorCallback(@"DOMException", @"NotFoundError");
-    });
+    // 不走 dispatch_get_main_queue: Dart CLI 进程无主 RunLoop, 回调会永远不执行
+    errorCallback(@"DOMException", @"NotFoundError");
     return;
   }
 
@@ -555,31 +599,29 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
 #endif
     [AVCaptureDevice requestAccessForMediaType:mediaType
                              completionHandler:^(BOOL granted) {
-                               dispatch_async(dispatch_get_main_queue(), ^{
-                                 if (granted) {
-                                   NavigatorUserMediaSuccessCallback scb =
-                                       ^(RTCMediaStream* mediaStream) {
-                                         [self getUserMedia:constraints
-                                             successCallback:successCallback
-                                               errorCallback:errorCallback
-                                                 mediaStream:mediaStream];
-                                       };
+                               if (granted) {
+                                 NavigatorUserMediaSuccessCallback scb =
+                                     ^(RTCMediaStream* mediaStream) {
+                                       [self getUserMedia:constraints
+                                           successCallback:successCallback
+                                             errorCallback:errorCallback
+                                               mediaStream:mediaStream];
+                                     };
 
-                                   if (mediaType == AVMediaTypeAudio) {
-                                     [self getUserAudio:constraints
-                                         successCallback:scb
-                                           errorCallback:errorCallback
-                                             mediaStream:mediaStream];
-                                   } else if (mediaType == AVMediaTypeVideo) {
-                                     [self getUserVideo:constraints
-                                         successCallback:scb
-                                           errorCallback:errorCallback
-                                             mediaStream:mediaStream];
-                                   }
-                                 } else {
-                                   errorCallback(@"DOMException", @"NotAllowedError");
+                                 if (mediaType == AVMediaTypeAudio) {
+                                   [self getUserAudio:constraints
+                                       successCallback:scb
+                                         errorCallback:errorCallback
+                                           mediaStream:mediaStream];
+                                 } else if (mediaType == AVMediaTypeVideo) {
+                                   [self getUserVideo:constraints
+                                       successCallback:scb
+                                         errorCallback:errorCallback
+                                           mediaStream:mediaStream];
                                  }
-                               });
+                               } else {
+                                 errorCallback(@"DOMException", @"NotAllowedError");
+                               }
                              }];
 #if TARGET_OS_OSX
   } else {

@@ -80,6 +80,10 @@
                 errorWithCode:@"CreateOfferFailed"
                       message:[NSString stringWithFormat:@"Error %@", error.userInfo[@"error"]]
                       details:nil]);
+          } else if (sdp == nil) {
+            result([WebrtcError errorWithCode:@"CreateOfferFailed"
+                                      message:@"Error: offer returned nil sdp"
+                                      details:nil]);
           } else {
             NSString* type = [RTCSessionDescription stringForType:sdp.type];
             result(@{@"sdp" : sdp.sdp, @"type" : type});
@@ -547,20 +551,24 @@
   dataChannel.peerConnectionId = peerConnection.flutterId;
   dataChannel.delegate = self;
   peerConnection.dataChannels[flutterChannelId] = dataChannel;
-
   dataChannel.flutterChannelId = flutterChannelId;
 
-  dispatch_async(dispatch_get_main_queue(), ^{
-    WebrtcEventCallback* cb = peerConnection.webrtcEventCallback;
-    if (cb) {
-      [cb post:@{
-        @"event" : @"didOpenDataChannel",
-        @"id" : dataChannelId,
-        @"label" : dataChannel.label,
-        @"flutterId" : flutterChannelId
-      }];
-    }
-  });
+  // 关键: 远程 DC 直接继承 PC 的事件回调(darwin 里是建 eventChannel+eventSink)。
+  // 不设的话 didReceiveMessage 的消息进 eventQueue 积压, 高速下 arrayByAddingObject
+  // O(n²) 卡死 native 线程, B 端几乎收不到大流量。
+  dataChannel.webrtcEventCallback = peerConnection.webrtcEventCallback;
+  dataChannel.eventQueue = nil;
+
+  // 不走 dispatch_get_main_queue(Dart CLI 无主 RunLoop), 直接 post
+  WebrtcEventCallback* cb = peerConnection.webrtcEventCallback;
+  if (cb) {
+    [cb post:@{
+      @"event" : @"didOpenDataChannel",
+      @"id" : dataChannelId,
+      @"label" : dataChannel.label,
+      @"flutterId" : flutterChannelId
+    }];
+  }
 }
 
 /** Called any time the PeerConnectionState changes. */

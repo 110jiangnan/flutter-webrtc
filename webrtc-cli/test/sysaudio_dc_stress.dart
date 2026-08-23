@@ -59,10 +59,11 @@ Future<void> sendLoop(RTCDataChannel dc, Traffic t) async {
         dc.send(RTCDataChannelMessage.fromBinary(chunk));
         t.dcSent += chunk.length;
       }
-      await Future.delayed(const Duration(milliseconds: 1));
+      // 10ms: mac 上 SCTP 发送快, 1ms 让出不够, B 的 ReceivePort 会被饿死
+      await Future.delayed(const Duration(milliseconds: 10));
     } else {
       // 缓冲堆积过高, 暂停等排空
-      await Future.delayed(const Duration(milliseconds: 5));
+      await Future.delayed(const Duration(milliseconds: 10));
     }
     // 每 5s 报告一次吞吐
     if (DateTime.now().difference(lastT) >= kReportEvery) {

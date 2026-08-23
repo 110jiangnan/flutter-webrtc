@@ -31,7 +31,7 @@ static NSData* WebrtcDataFromJsonArr(id obj) {
 // 结果里的 NSData 要还原成 JSON 数字数组(不能走 WebrtcJsonSanitize 的 base64)
 static NSArray* WebrtcJsonArrFromData(NSData* data) {
   NSMutableArray* out = [NSMutableArray arrayWithCapacity:data.length];
-  const uint8_t* bytes = data.bytes;
+  const uint8_t* bytes = (const uint8_t*)data.bytes;
   for (NSUInteger i = 0; i < data.length; i++) {
     [out addObject:@(bytes[i])];
   }

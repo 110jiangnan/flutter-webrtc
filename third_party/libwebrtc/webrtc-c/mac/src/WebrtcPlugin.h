@@ -12,7 +12,8 @@
 #import <WebRTC/WebRTC.h>
 #import "LocalTrack.h"
 
-#import "webrtc/webrtc.h" /* webrtc_event_cb / webrtc_result_cb 定义 */
+#import "webrtc.h" /* webrtc_event_cb / webrtc_result_cb 定义 (mac/include/webrtc.h, 与 win_linux 的 include 风格一致) */
+#import "AudioManager.h"
 
 @class WebrtcRTCVideoRenderer; /* 未迁移, 占位避免头引用缺失 */
 
@@ -64,7 +65,8 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
 @interface WebrtcPlugin : NSObject <RTCPeerConnectionDelegate,
                                     RTCAudioDeviceModuleDelegate,
                                     RTCDesktopMediaListDelegate,
-                                    RTCDesktopCapturerDelegate>
+                                    RTCDesktopCapturerDelegate,
+                                    RTCFrameCryptorDelegate>
 
 @property(nonatomic, strong, nullable) RTCPeerConnectionFactory* peerConnectionFactory;
 @property(nonatomic, strong, nullable) RTCPeerConnectionFactory* emptyPcFactory;

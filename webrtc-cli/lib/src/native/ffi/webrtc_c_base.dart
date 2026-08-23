@@ -439,6 +439,7 @@ DynamicLibrary loadWebrtcLibrary() {
     ],
     if (Platform.isMacOS) ...[
       'libwebrtc_c.dylib',
+      'native/libwebrtc_c.dylib',
       'build/macos/Build/Products/Debug/webrtc_c/libwebrtc_c.dylib',
       'macos/runner/libwebrtc_c.dylib',
     ],

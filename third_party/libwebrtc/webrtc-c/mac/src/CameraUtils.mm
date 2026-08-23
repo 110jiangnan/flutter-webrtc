@@ -1,4 +1,5 @@
 #import "CameraUtils.h"
+#import "WebrtcRTCPeerConnection.h"
 
 @implementation WebrtcPlugin (CameraUtils)
 
