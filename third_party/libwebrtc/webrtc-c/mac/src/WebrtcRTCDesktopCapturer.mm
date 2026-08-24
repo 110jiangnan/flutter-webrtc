@@ -4,7 +4,8 @@
  *   webrtc_get_desktop_sources  -> getDesktopSources:result:
  *   webrtc_get_display_media    -> getDisplayMedia:result:
  * 流程保留 darwin 原逻辑; result 换 WebrtcResult; FlutterError 换 WebrtcError。
- * 桌面源事件(desktopSourceAdded 等)在 C ABI 无消费方, 已删除(darwin 走插件级 eventSink)。
+ * 桌面源事件(desktopSourceAdded 等)照 darwin 完整实现, 由 plugin 作 RTCDesktopMediaListDelegate
+ * 经 postFactoryEvent 上报(factory.dart 的 onDesktopSourceChanged 等路由, 对齐 darwin eventSink)。
  */
 #import <objc/runtime.h>
 #import <AppKit/AppKit.h>
@@ -244,6 +245,97 @@ static NSArray<RTCDesktopSource*>* _captureSources;
   }
   NSLog(@"captureSources: %lu", [_captureSources count]);
   return YES;
+}
+
+#pragma mark - RTCDesktopMediaListDelegate delegate
+
+- (NSImage*)resizeImage:(NSImage*)sourceImage forSize:(CGSize)targetSize {
+  CGSize imageSize = sourceImage.size;
+  CGFloat width = imageSize.width;
+  CGFloat height = imageSize.height;
+  CGFloat targetWidth = targetSize.width;
+  CGFloat targetHeight = targetSize.height;
+  CGFloat scaleFactor = 0.0;
+  CGFloat scaledWidth = targetWidth;
+  CGFloat scaledHeight = targetHeight;
+  CGPoint thumbnailPoint = CGPointMake(0.0, 0.0);
+
+  if (CGSizeEqualToSize(imageSize, targetSize) == NO) {
+    CGFloat widthFactor = targetWidth / width;
+    CGFloat heightFactor = targetHeight / height;
+
+    // scale to fit the longer
+    scaleFactor = (widthFactor > heightFactor) ? widthFactor : heightFactor;
+    scaledWidth = ceil(width * scaleFactor);
+    scaledHeight = ceil(height * scaleFactor);
+
+    // center the image
+    if (widthFactor > heightFactor) {
+      thumbnailPoint.y = (targetHeight - scaledHeight) * 0.5;
+    } else if (widthFactor < heightFactor) {
+      thumbnailPoint.x = (targetWidth - scaledWidth) * 0.5;
+    }
+  }
+
+  NSImage* newImage = [[NSImage alloc] initWithSize:NSMakeSize(scaledWidth, scaledHeight)];
+  CGRect thumbnailRect = {thumbnailPoint, {scaledWidth, scaledHeight}};
+  NSRect imageRect = NSMakeRect(0.0, 0.0, width, height);
+
+  [newImage lockFocus];
+    [sourceImage drawInRect:thumbnailRect fromRect:imageRect operation:NSCompositingOperationCopy fraction:1.0];
+  [newImage unlockFocus];
+
+  return newImage;
+}
+
+#pragma clang diagnostic ignored "-Wobjc-protocol-method-implementation"
+- (void)didDesktopSourceAdded:(RTC_OBJC_TYPE(RTCDesktopSource) *)source {
+  // NSLog(@"didDesktopSourceAdded: %@, id %@", source.name, source.sourceId);
+  NSImage* image = [source UpdateThumbnail];
+  NSData* data = [[NSData alloc] init];
+  if (image != nil) {
+    NSImage* resizedImg = [self resizeImage:image forSize:NSMakeSize(320, 180)];
+    data = [resizedImg TIFFRepresentation];
+  }
+  [self postFactoryEvent:@{
+    @"event" : @"desktopSourceAdded",
+    @"id" : source.sourceId,
+    @"name" : source.name,
+    @"thumbnailSize" : @{@"width" : @0, @"height" : @0},
+    @"type" : source.sourceType == RTCDesktopSourceTypeScreen ? @"screen" : @"window",
+    @"thumbnail" : data
+  }];
+}
+
+#pragma clang diagnostic ignored "-Wobjc-protocol-method-implementation"
+- (void)didDesktopSourceRemoved:(RTC_OBJC_TYPE(RTCDesktopSource) *)source {
+  // NSLog(@"didDesktopSourceRemoved: %@, id %@", source.name, source.sourceId);
+  [self postFactoryEvent:@{
+    @"event" : @"desktopSourceRemoved",
+    @"id" : source.sourceId,
+  }];
+}
+
+#pragma clang diagnostic ignored "-Wobjc-protocol-method-implementation"
+- (void)didDesktopSourceNameChanged:(RTC_OBJC_TYPE(RTCDesktopSource) *)source {
+  // NSLog(@"didDesktopSourceNameChanged: %@, id %@", source.name, source.sourceId);
+  [self postFactoryEvent:@{
+    @"event" : @"desktopSourceNameChanged",
+    @"id" : source.sourceId,
+    @"name" : source.name,
+  }];
+}
+
+#pragma clang diagnostic ignored "-Wobjc-protocol-method-implementation"
+- (void)didDesktopSourceThumbnailChanged:(RTC_OBJC_TYPE(RTCDesktopSource) *)source {
+  // NSLog(@"didDesktopSourceThumbnailChanged: %@, id %@", source.name, source.sourceId);
+  NSImage* resizedImg = [self resizeImage:[source thumbnail] forSize:NSMakeSize(320, 180)];
+  NSData* data = [resizedImg TIFFRepresentation];
+  [self postFactoryEvent:@{
+    @"event" : @"desktopSourceThumbnailChanged",
+    @"id" : source.sourceId,
+    @"thumbnail" : data
+  }];
 }
 
 #pragma mark - RTCDesktopCapturerDelegate delegate

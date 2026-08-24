@@ -19,7 +19,7 @@ Future<void> main(List<String> args) async {
         ];
       } else if (Platform.isMacOS) {
         list = [
-          'native/libwebrtc_c.dylib',
+          './native/libwebrtc_c.dylib',
         ];
       }
 
