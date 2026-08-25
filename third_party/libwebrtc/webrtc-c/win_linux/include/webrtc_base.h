@@ -127,6 +127,11 @@ class WebrtcBase {
   // 桌面采集(始终包含, 原 RTC_DESKTOP_DEVICE 若宏已去掉)
   scoped_refptr<RTCDesktopDevice> desktop_device_;
   scoped_refptr<RTCDesktopCapturer> desktop_capturer_;
+  // 多源桌面采集注册表(锁屏帧替换要对**所有在跑的**桌面采集器生效):
+  // key = 源 id(如 "0"/"1",即 EnumDisplayDevicesW 序号 / WebRTC sourceId)。
+  std::map<std::string, scoped_refptr<RTCDesktopCapturer>> desktop_capturers_;
+  // stream id → 其桌面源的 id, MediaStreamDispose 时从 desktop_capturers_ 摘除, 防泄漏。
+  std::map<std::string, std::string> desktop_stream_sources_;
   std::vector<scoped_refptr<MediaSource>> desktop_sources_;
   std::map<DesktopType, scoped_refptr<RTCDesktopMediaList>> desktop_medialist_;
   // 持久的屏幕采集对象(参考 flutter 的 FlutterScreenCapture 常驻):

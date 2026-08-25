@@ -409,6 +409,13 @@ void WebrtcMediaStream::MediaStreamDispose(const std::string& stream_id) {
   scoped_refptr<RTCMediaStream> stream = base_->MediaStreamForId(stream_id);
   if (!stream) return;
 
+  // 桌面采集流: 从多源注册表摘除, 释放对采集器的引用(否则 GDI/DXGI 采集线程泄漏)
+  auto src_it = base_->desktop_stream_sources_.find(stream_id);
+  if (src_it != base_->desktop_stream_sources_.end()) {
+    base_->desktop_capturers_.erase(src_it->second);
+    base_->desktop_stream_sources_.erase(src_it);
+  }
+
   for (auto& track : stream->audio_tracks().std_vector()) {
     stream->RemoveTrack(track);
     base_->local_tracks_.erase(track->id().std_string());

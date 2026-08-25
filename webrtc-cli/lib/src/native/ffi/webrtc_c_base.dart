@@ -153,6 +153,9 @@ typedef _GetDesktopSourcesNative = Pointer<Utf8> Function(
     Pointer<Void> factory, Pointer<Utf8> typesJson);
 typedef _GetDisplayMediaNative = Pointer<Utf8> Function(
     Pointer<Void> factory, Pointer<Utf8> constraintsJson);
+// 挂/摘外部帧回调: callbackPtr 为函数指针地址(0 清除), 返回 0 成功 -1 无采集器
+typedef _SetExternalFrameCallbackNative = Int32 Function(
+    Pointer<Void> factory, Int64 callbackPtr, Pointer<Void> userData);
 typedef _FactoryGetRtpSenderCapsNative = Pointer<Utf8> Function(
     Pointer<Void> factory, Pointer<Utf8> kind);
 typedef _FactoryGetRtpReceiverCapsNative = Pointer<Utf8> Function(
@@ -204,6 +207,8 @@ typedef _DataChannelSendDart = int Function(
     int isBinary,
     Pointer<Uint8> data,
     int len);
+typedef _SetExternalFrameCallbackDart = int Function(
+    Pointer<Void> factory, int callbackPtr, Pointer<Void> userData);
 typedef _FactorySetEventCbDart = int Function(
     Pointer<Void> factory,
     Pointer<NativeFunction<EventCallbackNative>> cb,

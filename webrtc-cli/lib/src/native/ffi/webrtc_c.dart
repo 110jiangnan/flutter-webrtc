@@ -100,6 +100,10 @@ class WebrtcC {
   static Map<String, dynamic>? getDisplayMedia(
       Pointer<Void> factory, String constraintsJson) =>
       WebrtcCDesktop.getDisplayMedia(factory, constraintsJson);
+  // 挂/摘外部帧回调(锁屏帧替换), 0 成功 / -1 无采集器
+  static int setExternalFrameCallback(
+          Pointer<Void> factory, int callbackAddress) =>
+      WebrtcCDesktop.setExternalFrameCallback(factory, callbackAddress);
 
   // ---- peerconnection(PC 域) ----
   static Pointer<Void> createPeerConnection(Pointer<Void> factory,

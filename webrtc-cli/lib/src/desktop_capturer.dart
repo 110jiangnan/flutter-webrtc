@@ -152,6 +152,14 @@ class DesktopCapturerFfi implements DesktopCapturer {
 
   @override
   Future<void> setExternalFrameCallback(int callbackAddress) async {
-    // 渲染相关(外部帧回调), 按需求排除
+    // 对库内所有在跑的桌面采集器生效(每路按各自 sourceId 取对应屏幕的锁屏帧)。
+    final rc = WebrtcC.setExternalFrameCallback(
+        WebrtcRuntime.instance.factory, callbackAddress);
+    if (rc != 0) {
+      // -1 = 桌面采集器未启动(getDisplayMedia 未跑), 与 flutter 侧
+      // "No desktop capturer" 语义一致, 上层按需轮询重试。
+      throw StateError(
+          'webrtc_set_external_frame_callback($callbackAddress) failed: $rc');
+    }
   }
 }

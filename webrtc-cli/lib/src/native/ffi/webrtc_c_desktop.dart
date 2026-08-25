@@ -16,6 +16,9 @@ class WebrtcCDesktop {
       _GetDesktopSourcesNative>('webrtc_update_desktop_sources');
   static final _getDisplayMedia = _lib.lookupFunction<_GetDisplayMediaNative,
       _GetDisplayMediaNative>('webrtc_get_display_media');
+  static final _setExternalFrameCallback = _lib.lookupFunction<
+      _SetExternalFrameCallbackNative,
+      _SetExternalFrameCallbackDart>('webrtc_set_external_frame_callback');
   static final _freeString = _lib
       .lookupFunction<_FreeStringNative, _FreeStringDart>('webrtc_free_string');
 
@@ -55,5 +58,15 @@ class WebrtcCDesktop {
     } finally {
       malloc.free(c);
     }
+  }
+
+  /// 挂/摘桌面采集外部帧回调(锁屏帧替换): [callbackAddress] 为原生函数指针地址
+  /// (Rust 的 secure_screen_external_frame), 传 0 清除恢复桌面采集。
+  /// 对**所有在跑的**桌面采集器生效; 每路采集器自动带各自的源序号(user_data),
+  /// Rust 回调据此取对应屏幕的锁屏帧(多屏 sourceId ↔ 每屏一路)。
+  /// 返回 0 成功; -1 未启动桌面采集(库侧无采集器, 上层可轮询重试)。
+  static int setExternalFrameCallback(
+      Pointer<Void> factory, int callbackAddress) {
+    return _setExternalFrameCallback(factory, callbackAddress, nullptr);
   }
 }
