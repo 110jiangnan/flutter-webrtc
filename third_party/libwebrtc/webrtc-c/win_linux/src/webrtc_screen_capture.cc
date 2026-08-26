@@ -135,19 +135,6 @@ std::string WebrtcScreenCapture::GetDisplayMedia(const JNode& constraints) {
   if (!desktop_capturer) return "";
   base_->desktop_capturer_ = desktop_capturer;
 
-  // 注册进多源注册表(锁屏帧替换要对所有在跑的桌面采集器生效), 并记录 stream→源 映射
-  // 供 MediaStreamDispose 摘除。若此前已挂过锁屏外部回调(锁屏期间新开会话), 自动带上。
-  if (desktop_capturer->source().get()) {
-    std::string src_id = desktop_capturer->source()->id().std_string();
-    base_->desktop_capturers_[src_id] = desktop_capturer;
-    base_->desktop_stream_sources_[uuid] = src_id;
-    if (external_cb_ != 0) {
-      desktop_capturer->SetExternalFrameCallback(
-          reinterpret_cast<ExternalFrameCallback>(external_cb_),
-          UserDataForSourceId(src_id));
-    }
-  }
-
   JNode video_constraints;
   if (video && video->type == JNode::kObj) video_constraints = *video;
   scoped_refptr<RTCVideoSource> video_source =
@@ -163,6 +150,19 @@ std::string WebrtcScreenCapture::GetDisplayMedia(const JNode& constraints) {
   stream->AddTrack(track);
   base_->local_tracks_[track->id().std_string()] = track;
   base_->local_streams_[uuid] = stream;
+
+  // 按 trackId 建档(一个 sourceId 可能建多个桌面采集器, 不能用源号作 key 覆盖);
+  // 以 local_tracks_ 为权威, SetExternalFrameCallback 时自动剔除已销毁 track 的条目。
+  // 若此前已挂过锁屏外部回调(锁屏期间新开会话), 自动带上。
+  if (desktop_capturer->source().get()) {
+    base_->desktop_capturers_[track->id().std_string()] = desktop_capturer;
+    if (external_cb_ != 0) {
+      desktop_capturer->SetExternalFrameCallback(
+          reinterpret_cast<ExternalFrameCallback>(external_cb_),
+          UserDataForSourceId(desktop_capturer->source()->id().std_string()));
+    }
+  }
+
   desktop_capturer->Start(uint32_t(fps));
 
   JNode result;
@@ -189,23 +189,36 @@ int WebrtcScreenCapture::SetExternalFrameCallback(int64_t callback_ptr,
   // 覆盖"锁屏已激活、会话随后才开启"的顺序问题。
   external_cb_ = callback_ptr;
 
-  // 无任何在跑采集器时静默失败; 上层轮询可重试(回调已记住, 新建采集器仍会被带上)。
-  if (base_->desktop_capturers_.empty()) return -1;
-
   ExternalFrameCallback cb =
       callback_ptr != 0 ? reinterpret_cast<ExternalFrameCallback>(callback_ptr)
                         : nullptr;
-  for (auto& kv : base_->desktop_capturers_) {
-    if (!kv.second.get()) continue;
-    if (cb) {
-      // user_data 为空时按每路采集器的源 id 自动路由(多屏各取各屏的锁屏帧);
-      // 显式传入时对所有采集器统一使用(单路部署的显式覆盖)。
-      void* ud = user_data ? user_data : UserDataForSourceId(kv.first);
-      kv.second->SetExternalFrameCallback(cb, ud);
-    } else {
-      kv.second->ClearExternalFrameCallback();
+
+  // 遍历桌面采集器影子表, 以 local_tracks_ 为权威: track 已销毁的条目顺手剔除,
+  // 放掉对采集器的引用使其随 source 一并销毁(GDI 采集线程不泄漏)。
+  for (auto it = base_->desktop_capturers_.begin();
+       it != base_->desktop_capturers_.end();) {
+    if (base_->local_tracks_.find(it->first) == base_->local_tracks_.end()) {
+      it = base_->desktop_capturers_.erase(it);
+      continue;
     }
+    scoped_refptr<RTCDesktopCapturer> capturer = it->second;
+    if (capturer.get() && capturer->source().get()) {
+      if (cb) {
+        // user_data 为空时按每路采集器自身的源 id 自动路由(多屏各取各屏锁屏帧);
+        // 显式传入时对所有采集器统一使用(单路部署的显式覆盖)。
+        void* ud =
+            user_data ? user_data
+                      : UserDataForSourceId(capturer->source()->id().std_string());
+        capturer->SetExternalFrameCallback(cb, ud);
+      } else {
+        capturer->ClearExternalFrameCallback();
+      }
+    }
+    ++it;
   }
+
+  // 剔除后仍无任何在跑采集器时静默失败; 上层轮询可重试(回调已记住, 新建采集器仍会被带上)。
+  if (base_->desktop_capturers_.empty()) return -1;
   return 0;
 }
 

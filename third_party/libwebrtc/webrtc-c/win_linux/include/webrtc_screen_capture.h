@@ -32,11 +32,14 @@ class WebrtcScreenCapture : public MediaListObserver {
   std::string GetDisplayMedia(const JNode& constraints);
 
   // 挂/摘外部帧回调(锁屏帧替换, 参考 flutter_screen_capture.cc)。
-  // 语义: 对**所有在跑的**桌面采集器生效(base_->desktop_capturers_),每路采集器据自身
-  // sourceId(EnumDisplayDevicesW 序号)把 sourceIndex 作为 user_data 透传给回调, 让 Rust
-  // 侧按"每屏一路 sourceId"取对应屏幕的锁屏帧。callback_ptr 传 0 对全部采集器清除。
-  // 回调指针会被记住(external_cb_), 之后新建的采集器(GetDisplayMedia)自动带上,
-  // 覆盖"锁屏后新开会话"的场景。无任何采集器时返回 -1(上层轮询重试), 成功返回 0。
+  // 语义: 对**所有在跑的**桌面采集器生效(base_->desktop_capturers_, key=trackId);
+  // 每路采集器据自身 sourceId(EnumDisplayDevicesW 序号)把 sourceIndex 作为 user_data
+  // 透传给回调, 让 Rust 侧按"每屏一路 sourceId"取对应屏幕的锁屏帧。
+  // 生命周期: dispose 路径已主动摘除(见 MediaStreamDispose/MediaStreamTrackDispose);
+  // 本函数遍历时另以 local_tracks_ 为准兜底剔除残留条目并放掉采集器。
+  // callback_ptr 传 0 对全部采集器清除。回调指针会被记住(external_cb_), 之后新建的
+  // 采集器(GetDisplayMedia)自动带上, 覆盖"锁屏后新开会话"的场景。
+  // 无任何在跑采集器时返回 -1(上层轮询重试), 成功返回 0。
   int SetExternalFrameCallback(int64_t callback_ptr, void* user_data);
 
   // ---- MediaListObserver: 桌源变化事件推给 dart(经 factory_event_cb_) ----
