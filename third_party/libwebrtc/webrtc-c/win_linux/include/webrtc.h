@@ -327,8 +327,12 @@ WEBRTC_API char* webrtc_get_display_media(webrtc_handle factory,
  *                 并恢复正常桌面采集; user_data 显式传非空时为所有网络采集器统一使用,
  *                 传 NULL 时按**每路采集器自身的源 id**(EnumDisplayDevicesW 序号)自动路由。
  *   回调签名与 libwebrtc ExternalFrameCallback 一致:
- *     int(*)(void* user_data, int* out_w, int* out_h, uint8_t** out_data, int* out_len)
- *     返回 1 表示帧有效(out_data/out_len 填外部帧, ARGB), 0 表示暂无可采帧(应跳过)。
+ *     int(*)(void* user_data, ExternalFrameConsumer consume, void* ud)
+ *     consume: C++ 提供的消费函数, 原型
+ *       void(*)(void* ud, const uint8_t* argb, int w, int h, int len)
+ *     Rust 在持有帧锁时同步调用 consume(ud, argb, w, h, len), 数据指针锁内稳定;
+ *     len 为实际字节数, C++ 侧不得按 w*h*4 反推(不假设生产者缓冲紧凑排布),
+ *     C++ 直接转 I420 + OnFrame; 返回 1 表示已消费一帧, 0 表示暂无可采帧(应跳过)。
  *   多屏: 一次调用对**所有在跑的**桌面采集器生效, 每路 sourceId 一路 track、各取各屏;
  *   回调指针会被记住, 之后新建的采集器(GetDisplayMedia)自动带上(锁屏期间新开会话)。
  * 返回 0 成功; -1 参数非法(factory 为 NULL)或当前无任何在跑的桌面采集器。 */
