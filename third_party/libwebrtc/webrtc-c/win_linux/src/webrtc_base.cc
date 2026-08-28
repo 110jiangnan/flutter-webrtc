@@ -16,6 +16,7 @@ WebrtcBase::~WebrtcBase() {
   local_streams_.clear();
   local_tracks_.clear();
   video_capturers_.clear();
+  desktop_capturers_.clear();
   data_channel_observers_.clear();
   screen_capture_.reset();
   frame_cryptor_.reset();

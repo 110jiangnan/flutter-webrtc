@@ -41,5 +41,5 @@ finally {
 }
 
 Write-Host ""
-Write-Host "完成: $buildDir\Release\webrtc_c.dll (同目录已带 libwebrtc.dll)"
+Write-Host "success: $buildDir\Release\webrtc_c.dll (同目录已带 libwebrtc.dll)"
 Write-Host "Dart 侧 webrtc-cli 会自动尝试 build_vs\Release; 也可用环境变量 WEBRTC_C_LIB 指定路径"

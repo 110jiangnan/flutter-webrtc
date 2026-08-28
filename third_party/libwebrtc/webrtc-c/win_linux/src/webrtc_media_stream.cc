@@ -421,6 +421,15 @@ void WebrtcMediaStream::MediaStreamDispose(const std::string& stream_id) {
       if (cap->second->CaptureStarted()) cap->second->StopCapture();
       base_->video_capturers_.erase(cap);
     }
+    // 桌面采集: dispose 即按 trackId 摘除影子表并放掉引用 —— 否则采集线程/DC 会滞留
+    // 到下一次 SetExternalFrameCallback(锁状态翻转)才被懒剔除, 更久前不释放。
+    auto dcap = base_->desktop_capturers_.find(track->id().std_string());
+    if (dcap != base_->desktop_capturers_.end()) {
+      if (base_->desktop_capturer_ == dcap->second) {
+        base_->desktop_capturer_ = nullptr;  // 单槽"最近采集器"也放掉
+      }
+      base_->desktop_capturers_.erase(dcap);
+    }
   }
   base_->RemoveStreamForId(stream_id);
 }
@@ -459,6 +468,14 @@ void WebrtcMediaStream::MediaStreamTrackDispose(const std::string& track_id) {
         if (cap != base_->video_capturers_.end()) {
           if (cap->second->CaptureStarted()) cap->second->StopCapture();
           base_->video_capturers_.erase(cap);
+        }
+        // 桌面采集: track 单独销毁也要摘除影子表(与 MediaStreamDispose 对称)
+        auto dcap = base_->desktop_capturers_.find(track_id);
+        if (dcap != base_->desktop_capturers_.end()) {
+          if (base_->desktop_capturer_ == dcap->second) {
+            base_->desktop_capturer_ = nullptr;
+          }
+          base_->desktop_capturers_.erase(dcap);
         }
       }
     }

@@ -127,6 +127,12 @@ class WebrtcBase {
   // 桌面采集(始终包含, 原 RTC_DESKTOP_DEVICE 若宏已去掉)
   scoped_refptr<RTCDesktopDevice> desktop_device_;
   scoped_refptr<RTCDesktopCapturer> desktop_capturer_;
+  // 桌面采集器影子表(锁屏帧替换要对**所有在跑的**桌面采集器生效):
+  // key = **trackId**(uuid, 每路唯一 —— 一个 sourceId 可能建多个采集器, 不用源号作 key)。
+  // 生命周期: MediaStreamDispose / MediaStreamTrackDispose 主动摘除(放掉引用, 采集线程随
+  // source 销毁而停); SetExternalFrameCallback 遍历时也会以 local_tracks_ 为准兜底剔除
+  // 其他 RemoveTrack 路径残留的条目。
+  std::map<std::string, scoped_refptr<RTCDesktopCapturer>> desktop_capturers_;
   std::vector<scoped_refptr<MediaSource>> desktop_sources_;
   std::map<DesktopType, scoped_refptr<RTCDesktopMediaList>> desktop_medialist_;
   // 持久的屏幕采集对象(参考 flutter 的 FlutterScreenCapture 常驻):

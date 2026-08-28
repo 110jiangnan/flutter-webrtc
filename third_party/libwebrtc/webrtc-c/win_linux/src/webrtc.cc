@@ -512,6 +512,17 @@ char* webrtc_get_display_media(webrtc_handle factory,
   return json.empty() ? nullptr : StrDup(json);
 }
 
+// 挂/摘桌面采集外部帧回调(锁屏帧替换): callback_ptr=0 清除恢复桌面采集。
+// 无采集器(getDisplayMedia 未启动)返回 -1, 成功返回 0。
+int webrtc_set_external_frame_callback(webrtc_handle factory,
+                                       int64_t callback_ptr,
+                                       void* user_data) {
+  WebrtcBase* base = AsBase(factory);
+  if (!base) return -1;
+  return AsScreenCapture(base)->SetExternalFrameCallback(callback_ptr,
+                                                         user_data);
+}
+
 // ================= 被控: data channel =================
 
 char* webrtc_create_data_channel(webrtc_handle pc, const char* label,
