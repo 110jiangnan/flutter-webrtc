@@ -15,8 +15,11 @@ namespace libwebrtc {
 class DesktopCapturerObserver;
 
 
-typedef int (*ExternalFrameCallback)(void* user_data, int* out_w, int* out_h,
-                                     uint8_t** out_data, int* out_len);
+typedef void (*ExternalFrameConsumer)(void* ud, const uint8_t* argb, int w,
+                                      int h, int len);
+
+typedef int (*ExternalFrameCallback)(void* user_data,
+                                     ExternalFrameConsumer consume, void* ud);
 
 
 /**
