@@ -5,7 +5,7 @@ part of 'webrtc_c.dart';
 class WebrtcCDataChannel {
   WebrtcCDataChannel._();
 
-  static final DynamicLibrary _lib = loadWebrtcLibrary();
+  static final DynamicLibrary _lib = loadWebrtcLibrary('data');
 
   static final _createDataChannel = _lib.lookupFunction<_CreateDataChannelNative,
       _CreateDataChannelNative>('webrtc_create_data_channel');

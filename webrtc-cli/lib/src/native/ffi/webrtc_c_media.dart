@@ -6,7 +6,7 @@ part of 'webrtc_c.dart';
 class WebrtcCMedia {
   WebrtcCMedia._();
 
-  static final DynamicLibrary _lib = loadWebrtcLibrary();
+  static final DynamicLibrary _lib = loadWebrtcLibrary('media');
 
   static final _factoryCreate = _lib
       .lookupFunction<_FactoryCreateNative, _FactoryCreateNative>(

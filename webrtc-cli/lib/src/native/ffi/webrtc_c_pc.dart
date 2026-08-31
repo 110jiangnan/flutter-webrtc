@@ -6,7 +6,7 @@ part of 'webrtc_c.dart';
 class WebrtcCPc {
   WebrtcCPc._();
 
-  static final DynamicLibrary _lib = loadWebrtcLibrary();
+  static final DynamicLibrary _lib = loadWebrtcLibrary('pc');
 
   static final _createPeerConnection = _lib.lookupFunction<
       _CreatePeerConnectionNative,

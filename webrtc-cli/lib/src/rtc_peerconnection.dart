@@ -144,6 +144,14 @@ class RTCPeerConnectionFfi extends RTCPeerConnection {
             state: RTCDataChannelState.RTCDataChannelOpen);
         dc.attach();
         onDataChannel?.call(dc);
+        // 补触发一次 Open 状态回调: 对端创建的 channel 在 delegate 挂上时已 Open,
+        // 原生不会再发 dataChannelStateChanged, 上层(onDataChannelState 监听方,
+        // 如被控端 FileContext.onDataChannel)会因永远收不到 Open 而认为通道未连上。
+        // 先于 onDataChannel 通知不行(上层要在 onDataChannel 里挂 onDataChannelState),
+        // 所以这里在 call(onDataChannel) 之后补发。
+        if (dc.onDataChannelState != null) {
+          dc.onDataChannelState!(RTCDataChannelState.RTCDataChannelOpen);
+        }
         break;
       case 'onRenegotiationNeeded':
         onRenegotiationNeeded?.call();

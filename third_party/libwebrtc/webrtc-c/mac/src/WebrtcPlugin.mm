@@ -249,6 +249,7 @@ static WebrtcPlugin* sharedInstance_;
   @synchronized(self) {
     if (!sharedInstance_) {
       sharedInstance_ = [[WebrtcPlugin alloc] init];
+      NSLog(@"[DBG-sharedInstance] 首次创建 WebrtcPlugin=%p", sharedInstance_);
     }
     return sharedInstance_;
   }
@@ -1044,7 +1045,9 @@ static WebrtcPlugin* WebrtcPluginSingleton(void) {
 }
 
 webrtc_handle webrtc_factory_create(void) {
-  return (__bridge void*)WebrtcPluginSingleton();
+  WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSLog(@"[DBG-factory_create] plugin=%p", p);
+  return (__bridge void*)p;
 }
 
 void webrtc_factory_destroy(webrtc_handle factory) {
@@ -1068,6 +1071,8 @@ webrtc_handle webrtc_create_peer_connection(webrtc_handle factory,
                                             webrtc_event_cb on_event,
                                             void* user_data) {
   WebrtcPlugin* p = WebrtcPluginSingleton();
+  NSLog(@"[DBG-createPC] plugin=%p factory=%p peerConnectionsCount=%lu",
+        p, factory, (unsigned long)[p.peerConnections count]);
   NSDictionary* config = WebrtcParseJson(configuration_json);
   NSDictionary* constraints = WebrtcParseJson(constraints_json);
   __block RTCPeerConnection* created = nil;
@@ -1324,9 +1329,15 @@ char* webrtc_pc_add_track(webrtc_handle pc, const char* track_id, const char* st
   RTCPeerConnection* p = (__bridge RTCPeerConnection*)pc;
   WebrtcPlugin* plugin = WebrtcPluginSingleton();
   RTCMediaStreamTrack* track = [plugin trackForId:WebrtcCString(track_id) peerConnectionId:nil];
+  NSLog(@"[DBG-addTrack] plugin=%p pc=%p trackForId(%s)=%@  localTracksCount=%lu",
+        plugin, p, track_id ?: "(null)", track ? @"found" : @"NIL",
+        (unsigned long)[plugin.localTracks count]);
   NSArray* streamIds = stream_id ? @[ WebrtcCString(stream_id) ] : @[];
   RTCRtpSender* sender = [p addTrack:track streamIds:streamIds];
-  if (!sender) return NULL;
+  if (!sender) {
+    NSLog(@"[DBG-addTrack] addTrack 返回 nil -> 将抛 addTrack failed");
+    return NULL;
+  }
   NSDictionary* out = [plugin rtpSenderToMap:sender];
   return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
                                                   encoding:NSUTF8StringEncoding]);

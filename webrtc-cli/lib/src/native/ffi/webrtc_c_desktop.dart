@@ -6,7 +6,7 @@ part of 'webrtc_c.dart';
 class WebrtcCDesktop {
   WebrtcCDesktop._();
 
-  static final DynamicLibrary _lib = loadWebrtcLibrary();
+  static final DynamicLibrary _lib = loadWebrtcLibrary('desktop');
 
   static final _getDesktopSources = _lib.lookupFunction<
       _GetDesktopSourcesNative,

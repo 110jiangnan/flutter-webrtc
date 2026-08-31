@@ -118,6 +118,8 @@ static NSArray<RTCDesktopSource*>* _captureSources;
   LocalVideoTrack *localVideoTrack = [[LocalVideoTrack alloc] initWithTrack:videoTrack videoProcessing:videoProcessingAdapter];
 
   [self.localTracks setObject:localVideoTrack forKey:trackUUID];
+  NSLog(@"[DBG-getDisplayMedia] plugin=%p trackUUID=%@ streamId=%@ localTracksCount=%lu",
+        self, trackUUID, mediaStreamId, (unsigned long)[self.localTracks count]);
 
   NSMutableArray* audioTracks = [NSMutableArray array];
   NSMutableArray* videoTracks = [NSMutableArray array];

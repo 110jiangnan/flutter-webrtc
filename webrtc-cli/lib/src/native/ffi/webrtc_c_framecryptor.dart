@@ -6,7 +6,7 @@ part of 'webrtc_c.dart';
 class WebrtcCFrameCryptor {
   WebrtcCFrameCryptor._();
 
-  static final DynamicLibrary _lib = loadWebrtcLibrary();
+  static final DynamicLibrary _lib = loadWebrtcLibrary('framecrypto');
 
   static final _createFrameCryptor = _lib.lookupFunction<_FrameCryptorCallNative,
       _FrameCryptorCallNative>('webrtc_frame_cryptor_factory_create_frame_cryptor');

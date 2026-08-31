@@ -320,7 +320,7 @@ class EventBus {
   static int _nextIndex = 1;
 
   // C 侧异步回调传的堆拷贝用这个释放
-  static final _lib = loadWebrtcLibrary();
+  static final _lib = loadWebrtcLibrary('base');
   static final _freeString = _lib
       .lookupFunction<_FreeStringNative, _FreeStringDart>('webrtc_free_string');
 
@@ -422,11 +422,40 @@ class EventBus {
 
 // ================= 库加载 =================
 
-DynamicLibrary loadWebrtcLibrary() {
+// 已成功加载的库句柄 + 首次成功的路径。所有 part 类共用, 从源头杜绝
+// 同一 dylib 经多条路径各 dlopen 一次(会产生两份 image / 两个 WebrtcPlugin
+// 单例, 症状: addTrack failed)。
+DynamicLibrary? _cachedLib;
+String? _cachedPath;
+bool _cacheInitialized = false;
+
+DynamicLibrary loadWebrtcLibrary([String tag = '?']) {
+  final _dbgPrint = (String m) =>
+      print('[WebrtcC-Load][$tag] $m');
+
+  // 已有缓存: 直接复用首次加载的句柄/路径, 不做任何新的 open。
+  if (_cacheInitialized) {
+    _dbgPrint('命中缓存: 复用首次加载路径=$_cachedPath');
+    if (_cachedLib == null) {
+      throw StateError(
+          Platform.isMacOS ? 'libwebrtc_c.dylib 首次加载失败(缓存记录)' : 'webrtc_c.dll 首次加载失败');
+    }
+    return _cachedLib!;
+  }
+
+  final cwd = Directory.current.path;
+  _dbgPrint('调用点=$tag cwd=$cwd WEBRTC_C_LIB=${Platform.environment['WEBRTC_C_LIB']}');
+
   final override = Platform.environment['WEBRTC_C_LIB'];
   if (override != null && override.isNotEmpty) {
     _preloadLibwebrtc(_dirOf(override));
-    return DynamicLibrary.open(override);
+    _dbgPrint('使用 WEBRTC_C_LIB override -> $override');
+    final lib = DynamicLibrary.open(override);
+    _dbgPrint('override 打开成功: $override');
+    _cachedLib = lib;
+    _cachedPath = File(override).absolute.path;
+    _cacheInitialized = true;
+    return lib;
   }
 
   final candidates = <String>[
@@ -450,17 +479,37 @@ DynamicLibrary loadWebrtcLibrary() {
     ],
   ];
   for (final path in candidates) {
+    final abs = File(path).absolute.path;
+    final exists = File(abs).existsSync();
+    _dbgPrint('候选: $abs 存在=$exists');
     try {
       // Windows: 先加载同目录的 libwebrtc.dll(webrtc_c.dll 依赖它, 加载器不搜 DLL 所在目录)
       // Mac: dlopen 会自动解析 dylib 同目录依赖, 无需手动 preload
       if (Platform.isWindows) {
         _preloadLibwebrtc(_dirOf(path));
       }
-      return DynamicLibrary.open(path);
-    } catch (_) {
-      // 继续尝试
+      final lib = DynamicLibrary.open(path);
+      // 用两个代表性符号的地址标记 image 身份。两份 image 里同一符号地址不同。
+      try {
+        final p1 = lib.lookup<NativeFunction<_FactoryCreateNative>>(
+            'webrtc_factory_create');
+        final p2 = lib.lookup<NativeFunction<_FreeStringNative>>(
+            'webrtc_free_string');
+        _dbgPrint('打开成功: $path  webrtc_factory_create@0x'
+            '${p1.address.toRadixString(16)}  webrtc_free_string@0x'
+            '${p2.address.toRadixString(16)}');
+      } catch (e) {
+        _dbgPrint('打开成功: $path (符号解析异常 $e)');
+      }
+      _cachedLib = lib;
+      _cachedPath = abs;
+      _cacheInitialized = true;
+      return lib;
+    } catch (e) {
+      _dbgPrint('打开失败: $abs -> $e');
     }
   }
+  _cacheInitialized = true; // 记录"已尝试过但失败", 避免每次重试打满日志
   throw StateError(
       Platform.isMacOS ? 'libwebrtc_c.dylib 加载失败' : 'webrtc_c.dll 加载失败'
       ', 可用环境变量 WEBRTC_C_LIB 指定路径');
