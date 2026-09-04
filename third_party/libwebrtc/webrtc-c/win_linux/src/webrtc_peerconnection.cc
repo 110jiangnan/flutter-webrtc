@@ -119,6 +119,8 @@ JNode RtpParametersToJNode(RTCRtpParameters* params) {
         {"maxFramerate", MakeNum(enc->max_framerate())},
         {"scaleResolutionDownBy", MakeNum(enc->scale_resolution_down_by())},
         {"scalabilityMode", MakeStr(enc->scalability_mode().std_string())},
+        {"priority", MakeStr(BitratePriorityToString(enc->bitrate_priority()))},
+        {"networkPriority", MakeStr(RTCPriorityToString(enc->network_priority()))},
         {"ssrc", MakeNum(static_cast<int>(enc->ssrc()))},
     }));
   }
@@ -274,6 +276,44 @@ scoped_refptr<RTCRtpTransceiver> FindTransceiverById(PcHandle* h,
   return nullptr;
 }
 
+// ---- 编码优先级(参考上游 749b356: priority↔bitratePriority, networkPriority↔RTCPriority) ----
+static double StringToBitratePriority(const std::string& priority) {
+  if (priority == "very-low") return 0.5;
+  if (priority == "low") return 1.0;
+  if (priority == "medium") return 2.0;
+  if (priority == "high") return 4.0;
+  return 1.0;
+}
+
+static std::string BitratePriorityToString(double bitrate_priority) {
+  if (bitrate_priority <= 0.5) return "very-low";
+  if (bitrate_priority <= 1.0) return "low";
+  if (bitrate_priority <= 2.0) return "medium";
+  return "high";
+}
+
+static RTCPriority StringToRTCPriority(const std::string& priority) {
+  if (priority == "very-low") return RTCPriority::kVeryLow;
+  if (priority == "low") return RTCPriority::kLow;
+  if (priority == "medium") return RTCPriority::kMedium;
+  if (priority == "high") return RTCPriority::kHigh;
+  return RTCPriority::kLow;
+}
+
+static std::string RTCPriorityToString(RTCPriority priority) {
+  switch (priority) {
+    case RTCPriority::kVeryLow:
+      return "very-low";
+    case RTCPriority::kLow:
+      return "low";
+    case RTCPriority::kMedium:
+      return "medium";
+    case RTCPriority::kHigh:
+      return "high";
+  }
+  return "low";
+}
+
 // 用 JSON 里的 encodings/degradationPreference 更新 RTCRtpParameters(参考 updateRtpParameters)
 void UpdateRtpParameters(const JNode& json,
                          scoped_refptr<RTCRtpParameters> parameters) {
@@ -300,6 +340,12 @@ void UpdateRtpParameters(const JNode& json,
       const JNode* max_framerate = map.Get("maxFramerate");
       if (max_framerate && max_framerate->type == JNode::kNum)
         param->set_max_framerate(max_framerate->n);
+      const JNode* priority = map.Get("priority");
+      if (priority && priority->type == JNode::kStr)
+        param->set_bitrate_priority(StringToBitratePriority(priority->s));
+      const JNode* network_priority = map.Get("networkPriority");
+      if (network_priority && network_priority->type == JNode::kStr)
+        param->set_network_priority(StringToRTCPriority(network_priority->s));
       const JNode* num_temporal = map.Get("numTemporalLayers");
       if (num_temporal && num_temporal->type == JNode::kNum)
         param->set_num_temporal_layers(static_cast<int>(num_temporal->n));
@@ -366,6 +412,12 @@ scoped_refptr<RTCRtpEncodingParameters> MapToEncoding(const JNode& map) {
   const JNode* max_framerate = map.Get("maxFramerate");
   if (max_framerate && max_framerate->type == JNode::kNum)
     encoding->set_max_framerate(static_cast<int>(max_framerate->n));
+  const JNode* priority = map.Get("priority");
+  if (priority && priority->type == JNode::kStr)
+    encoding->set_bitrate_priority(StringToBitratePriority(priority->s));
+  const JNode* network_priority = map.Get("networkPriority");
+  if (network_priority && network_priority->type == JNode::kStr)
+    encoding->set_network_priority(StringToRTCPriority(network_priority->s));
   const JNode* num_temporal = map.Get("numTemporalLayers");
   if (num_temporal && num_temporal->type == JNode::kNum)
     encoding->set_num_temporal_layers(static_cast<int>(num_temporal->n));

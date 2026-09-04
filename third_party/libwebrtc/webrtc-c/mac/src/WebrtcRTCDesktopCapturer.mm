@@ -211,6 +211,13 @@ static NSArray<RTCDesktopSource*>* _captureSources;
   BOOL captureScreen = NO;
   _captureSources = [NSMutableArray array];
 
+  // 对齐上游 ea3d60e: forceReload 时丢弃缓存的列表, 下次访问时重建,
+  // 否则 UpdateSourceList(forceReload) 可能仍返回陈旧源(重命名/增删后不刷新)。
+  if (forceReload) {
+    _screen = nil;
+    _window = nil;
+  }
+
   NSEnumerator* typesEnumerator = [types objectEnumerator];
   NSString* type;
   while ((type = typesEnumerator.nextObject) != nil) {

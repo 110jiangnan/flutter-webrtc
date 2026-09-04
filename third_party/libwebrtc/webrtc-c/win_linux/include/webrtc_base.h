@@ -45,6 +45,7 @@ class WebrtcDataChannel;
 class WebrtcDataChannelObserver;
 class WebrtcScreenCapture;
 class WebrtcFrameCryptor;
+class WebrtcDataPacketCryptor;
 // PC 观察者(定义在 webrtc_peerconnection.h, 这里仅前向声明供注册表用裸指针)
 class CppPcObserver;
 
@@ -55,6 +56,7 @@ class WebrtcBase {
   friend class WebrtcDataChannel;
   friend class WebrtcScreenCapture;
   friend class WebrtcFrameCryptor;
+  friend class WebrtcDataPacketCryptor;
 
  public:
   enum ParseConstraintType { kMandatory, kOptional };
@@ -74,6 +76,10 @@ class WebrtcBase {
   scoped_refptr<RTCMediaTrack> MediaTrackForId(const std::string& id);
 
   std::string GenerateUUID();  // Helper::CreateRandomUuid
+
+  // 停掉 screen_capture 的 loopback 音频采集(参考上游桌面采集器 OnStop 触发的清理)。
+  // stream dispose 释放桌面采集器时调用, 使 getDisplayMedia {audio:true} 的采集随共享结束而停。
+  void StopScreenLoopback();
 
   RTCPeerConnection* PeerConnectionForId(const std::string& id);
 
@@ -141,6 +147,9 @@ class WebrtcBase {
   // 持久的 E2EE 帧加密对象(参考 flutter_frame_cryptor 的 FlutterFrameCryptor 常驻):
   // 跨调用保存 frame_cryptors_ / key_providers_ 注册表。
   std::unique_ptr<WebrtcFrameCryptor> frame_cryptor_;
+  // 持久的 data channel 包加密对象(参考 flutter_data_packet_cryptor 常驻):
+  // 跨调用保存 data_packet_cryptors_ 注册表; 复用 frame_cryptor 的 key provider。
+  std::unique_ptr<WebrtcDataPacketCryptor> data_packet_cryptor_;
   scoped_refptr<RTCAudioProcessing> audio_processing_;
   // createPeerConnection 用的 RTCConfiguration(同 flutter configuration_)
   RTCConfiguration configuration_;

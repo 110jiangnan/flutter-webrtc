@@ -16,9 +16,10 @@ set(LIBWEBRTC_LIBDIR "${LIBWEBRTC_DIR}/lib/win64")
 # 绝不要把 win_linux 的 xx.cc 无条件 set 进 ALL 平台的源列表。
 set(WEBRTC_C_SOURCES "")
 
-# ---- 平台无关的纯 C++ 工具 (common/, 当前为空, 有实际共享代码时再往里放) ----
+# ---- 平台无关的纯 C++ 工具 (common/: parson.c + flutter_utf8_sanitize.cc) ----
 # 注: mac 用 ObjC + Foundation (NSJSONSerialization 等), 不消费 common 的 C++ 工具;
 #     只有真正"三平台共用"的纯 std C++ 代码才放这, 别把单平台实现塞进来。
+#     当前这些由 win_linux 分支消费(见下); mac 如用到再从 WEBRTC_COMMON_SOURCES 加入。
 set(WEBRTC_COMMON_SOURCES "")
 
 # ---- win/linux: C++ C ABI ----
@@ -27,18 +28,30 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     win_linux/src/webrtc.cc
     win_linux/src/webrtc_common.cc
     common/parson.c
+    common/flutter_utf8_sanitize.cc
     win_linux/src/webrtc_base.cc
     win_linux/src/webrtc_media_stream.cc
     win_linux/src/webrtc_peerconnection.cc
     win_linux/src/webrtc_data_channel.cc
     win_linux/src/webrtc_screen_capture.cc
     win_linux/src/webrtc_frame_cryptor.cc
+    win_linux/src/webrtc_data_packet_cryptor.cc
     win_linux/src/webrtc_sys_audio_manager.cc
     win_linux/src/webrtc_sys_audio_source.cc
     win_linux/src/webrtc_win_sys_audio_capturer.cc
   )
+  if(WIN32)
+    # getDisplayMedia {audio:true} 的 ApplicationLoopbackAudio 采集(照抄上游 windows/)
+    list(APPEND WEBRTC_C_SOURCES
+      win_linux/src/application_loopback_capturer.cc
+      win_linux/src/loopback_capturer_factory.cc
+    )
+  endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND WEBRTC_C_SOURCES win_linux/src/webrtc_linux_sys_audio_capturer.cc)
+    list(APPEND WEBRTC_C_SOURCES win_linux/src/loopback_capturer_factory_linux.cc)
+    # getDisplayMedia {audio:true} 的 PulseAudio monitor 采集(照抄上游 linux/pulse_loopback_capturer.cc)
+    list(APPEND WEBRTC_C_SOURCES win_linux/src/pulse_loopback_capturer.cc)
   endif()
 elseif(APPLE)
   # mac 独立整套 ObjC: 不复用 win/linux 的 C++ 源码
@@ -136,6 +149,21 @@ elseif(APPLE)
     mac/src/AudioProcessingAdapter.mm
     mac/src/AudioManager.mm
     PROPERTIES LANGUAGE OBJCXX)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # getDisplayMedia {audio:true} 的 PulseAudio monitor 采集(照抄上游 linux/CMakeLists):
+  # 找到 libpulse 才开 HAVE_LIBPULSE(pulse_loopback_capturer.cc 生效, factory 返回真实现);
+  # 找不到则退化为 nullptr(该 TU 为空), 不破坏整个构建。
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(PULSE QUIET IMPORTED_TARGET libpulse libpulse-simple)
+  endif()
+  if(TARGET PkgConfig::PULSE)
+    message(STATUS "webrtc-c: libpulse found -- enabling Linux getDisplayMedia system-audio loopback.")
+    target_compile_definitions(webrtc_c PRIVATE HAVE_LIBPULSE)
+    target_link_libraries(webrtc_c PRIVATE PkgConfig::PULSE)
+  else()
+    message(STATUS "webrtc-c: libpulse not found -- getDisplayMedia {audio} has no loopback track.")
+  endif()
 endif()
 
 # 中文注释需要 /utf-8 (MSVC)

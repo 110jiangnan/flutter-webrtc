@@ -9,9 +9,19 @@
 
 namespace libwebrtc {
 
-enum class Algorithm {
+// 帧加密算法(对齐 m150: 旧 Algorithm 改名 FrameCryptorAlgorithm)
+enum class FrameCryptorAlgorithm {
   kAesGcm = 0,
   kAesCbc,
+};
+
+// 兼容别名: rtc_data_packet_cryptor.h 等仍可用 Algorithm 表示帧加密算法
+using Algorithm = FrameCryptorAlgorithm;
+
+// 密钥派生算法
+enum class KeyDerivationAlgorithm {
+  kPBKDF2 = 0,
+  kHKDF,
 };
 
 #define DEFAULT_KEYRING_SIZE 16
@@ -26,19 +36,26 @@ struct KeyProviderOptions {
   // The size of the key ring. between 1 and 255.
   int key_ring_size;
   bool discard_frame_when_cryptor_not_ready;
+  // 密钥派生算法(对齐 m150: keyDerivationAlgorithm)
+  KeyDerivationAlgorithm key_derivation_algorithm;
   KeyProviderOptions()
       : shared_key(false),
         ratchet_salt(vector<uint8_t>()),
         ratchet_window_size(0),
         failure_tolerance(-1),
         key_ring_size(DEFAULT_KEYRING_SIZE),
-        discard_frame_when_cryptor_not_ready(false) {}
+        discard_frame_when_cryptor_not_ready(false),
+        key_derivation_algorithm(KeyDerivationAlgorithm::kPBKDF2) {}
   KeyProviderOptions(KeyProviderOptions& copy)
       : shared_key(copy.shared_key),
         ratchet_salt(copy.ratchet_salt),
+        uncrypted_magic_bytes(copy.uncrypted_magic_bytes),
         ratchet_window_size(copy.ratchet_window_size),
         failure_tolerance(copy.failure_tolerance),
-        key_ring_size(copy.key_ring_size) {}
+        key_ring_size(copy.key_ring_size),
+        discard_frame_when_cryptor_not_ready(
+            copy.discard_frame_when_cryptor_not_ready),
+        key_derivation_algorithm(copy.key_derivation_algorithm) {}
 };
 
 /// Shared secret key for frame encryption.

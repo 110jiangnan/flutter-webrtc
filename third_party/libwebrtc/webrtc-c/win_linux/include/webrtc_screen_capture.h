@@ -11,6 +11,9 @@
 #include "webrtc_base.h"
 #include "webrtc_common.h"
 
+#include "loopback_capturer.h"
+#include "rtc_audio_source.h"
+#include "rtc_audio_track.h"
 #include "rtc_desktop_media_list.h"
 
 namespace webrtc {
@@ -20,6 +23,7 @@ using namespace libwebrtc;
 class WebrtcScreenCapture : public MediaListObserver {
  public:
   explicit WebrtcScreenCapture(WebrtcBase* base);
+  ~WebrtcScreenCapture() override;
 
   // types: ["screen","window"] → {"sources":[{id,name,type,thumbnailSize}]}, 失败空串
   std::string GetDesktopSources(const JNode& types);
@@ -27,8 +31,11 @@ class WebrtcScreenCapture : public MediaListObserver {
   // 不强制重载方式的源列表刷新(参考 UpdateDesktopSources) → {"result":true}, 失败空串
   std::string UpdateDesktopSources(const JNode& types);
 
-  // constraints: {"video":{"deviceId":{"exact":id},"mandatory":{"frameRate":n},"cursor":"never"}}
-  // → {"streamId","audioTracks":[],"videoTracks":[{id,label,kind,enabled}]}, 失败空串
+  // constraints: {"video":{"deviceId":{"exact":id},"mandatory":{"frameRate":n},
+  //                          "cursor":"always"|"never"|true|false},
+  //               "audio":true|map}
+  // audio:true 时用 LoopbackCapturer(ApplicationLoopbackAudio)同采系统音频进流
+  // → {"streamId","audioTracks":[{id,label,kind,enabled}],"videoTracks":[...]}, 失败空串
   std::string GetDisplayMedia(const JNode& constraints);
 
   // 挂/摘外部帧回调(锁屏帧替换, 参考 flutter_screen_capture.cc)。
@@ -53,11 +60,19 @@ class WebrtcScreenCapture : public MediaListObserver {
  private:
   bool BuildDesktopSourcesList(const JNode& types, bool force_reload);
 
+  // 停掉当前 loopback 音频采集并清引用(参考上游 OnStop 里的清理)
+  void StopLoopback();
+
   // 往 factory 级事件回调推一条桌源事件 JSON {"event":..., "id":..., ...}
   void FireDesktopEvent(const std::string& event, const JNode& body);
 
   // 最近一次设置的外部帧回调指针(0 = 未挂)。新建采集器时自动复用。
   int64_t external_cb_ = 0;
+
+  // getDisplayMedia {audio:true} 期间活跃的系统音频采集(参考上游同名成员)。
+  // 为空表示未在采或平台不支持。
+  std::unique_ptr<flutter_webrtc_plugin::LoopbackCapturer> loopback_capturer_;
+  scoped_refptr<RTCAudioSource> loopback_audio_source_;
 
   WebrtcBase* base_;
 };

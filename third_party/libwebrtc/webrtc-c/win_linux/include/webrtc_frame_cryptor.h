@@ -61,6 +61,10 @@ class WebrtcFrameCryptor {
   std::string KeyProviderSetSifTrailer(const JNode& constraints);
   std::string KeyProviderDispose(const JNode& constraints);
 
+  // DataPacketCryptor 复用同一批 KeyProvider(参考上游 base_->key_providers_)
+  scoped_refptr<KeyProvider> GetKeyProviderForId(
+      const std::string& key_provider_id);
+
  private:
   // JNode 字节数组(view) → std::vector<uint8_t>
   static std::vector<uint8_t> BytesOf(const JNode& v);

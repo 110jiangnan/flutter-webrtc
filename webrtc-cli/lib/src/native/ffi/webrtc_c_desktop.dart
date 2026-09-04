@@ -19,6 +19,9 @@ class WebrtcCDesktop {
   static final _setExternalFrameCallback = _lib.lookupFunction<
       _SetExternalFrameCallbackNative,
       _SetExternalFrameCallbackDart>('webrtc_set_external_frame_callback');
+  static final _requestCapturePermission = _lib.lookupFunction<
+      _CapturePermissionNative,
+      _CapturePermissionNative>('webrtc_request_capture_permission');
   static final _freeString = _lib
       .lookupFunction<_FreeStringNative, _FreeStringDart>('webrtc_free_string');
 
@@ -68,5 +71,13 @@ class WebrtcCDesktop {
   static int setExternalFrameCallback(
       Pointer<Void> factory, int callbackAddress) {
     return _setExternalFrameCallback(factory, callbackAddress, nullptr);
+  }
+
+  /// 请求/检查屏幕录制权限(对齐上游 requestCapturePermission, mac 语义):
+  /// 已授权返回 true; 未授权弹系统授权框并返回用户选择。win/linux 恒 true。
+  static bool requestCapturePermission(Pointer<Void> factory) {
+    final ptr = _requestCapturePermission(factory);
+    final json = _takeString(ptr);
+    return json == null ? false : (decodeJson(json)['result'] as bool?) ?? false;
   }
 }

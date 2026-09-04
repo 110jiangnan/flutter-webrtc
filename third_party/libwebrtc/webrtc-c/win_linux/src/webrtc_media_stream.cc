@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "flutter_utf8_sanitize.h"
 #include "rtc_audio_device.h"
 #include "rtc_audio_track.h"
 #include "rtc_media_track.h"
@@ -63,6 +64,22 @@ static RTCAudioOptions AudioOptionsFromConstraints(const JNode& audio) {
   options.highpass_filter =
       ConstrainBool(audio, "highpassFilter", options.highpass_filter);
   return options;
+}
+
+// 参考上游 flutter_media_stream.cc 的 SanitizeDeviceIdFromAudioBuffers:
+// ADM/设备缓冲可能非 UTF-8, 设备 id 用 guid(非空)否则 name, 统一 sanitize 后
+// 再与 dart 传来的 sourceId/deviceId 比较 / 放进 settings。
+static std::string SanitizeDeviceIdFromAudioBuffers(const char* name,
+                                                    const char* guid) {
+  const std::string raw = (guid != nullptr && strlen(guid) > 0)
+                              ? std::string(guid)
+                              : std::string(name != nullptr ? name : "");
+  return flutter_webrtc_plugin::SanitizeUtf8ForFlutter(raw);
+}
+
+static std::string SanitizeLabel(const char* name) {
+  return flutter_webrtc_plugin::SanitizeUtf8ForFlutter(
+      std::string(name != nullptr ? name : ""));
 }
 
 WebrtcMediaStream::WebrtcMediaStream(WebrtcBase* base) : base_(base) {}
@@ -136,13 +153,17 @@ bool WebrtcMediaStream::GetUserAudio(const JNode& audio, RTCMediaStream* stream,
   char strRecordingGuid[256] = {0};
   for (int16_t i = 0; i < recording_devices; ++i) {
     device->RecordingDeviceName(i, strRecordingName, strRecordingGuid);
-    if (sourceId != "" && sourceId == std::string(strRecordingGuid)) {
+    if (sourceId != "" &&
+        sourceId == SanitizeDeviceIdFromAudioBuffers(strRecordingName,
+                                                     strRecordingGuid)) {
       device->SetRecordingDevice(i);
     }
   }
   if (sourceId == "") {
     device->RecordingDeviceName(0, strRecordingName, strRecordingGuid);
-    sourceId = strRecordingGuid;
+    sourceId = SanitizeDeviceIdFromAudioBuffers(strRecordingName,
+                                                strRecordingGuid);
+    device->SetRecordingDevice(0);
   }
 
   // 输出设备: 按 deviceId 选播放设备
@@ -150,7 +171,9 @@ bool WebrtcMediaStream::GetUserAudio(const JNode& audio, RTCMediaStream* stream,
   char strPlayoutGuid[256] = {0};
   for (int16_t i = 0; i < playout_devices; ++i) {
     device->PlayoutDeviceName(i, strPlayoutName, strPlayoutGuid);
-    if (deviceId != "" && deviceId == std::string(strPlayoutGuid)) {
+    if (deviceId != "" &&
+        deviceId == SanitizeDeviceIdFromAudioBuffers(strPlayoutName,
+                                                     strPlayoutGuid)) {
       device->SetPlayoutDevice(i);
     }
   }
@@ -172,7 +195,7 @@ bool WebrtcMediaStream::GetUserAudio(const JNode& audio, RTCMediaStream* stream,
       {"label", MakeStr(track->id().std_string())},
       {"kind", MakeStr("audio")},
       {"enabled", MakeBool(track->enabled())},
-      {"settings", MakeObj({{"deviceId", MakeStr(sourceId)},
+      {"settings", MakeObj({{"deviceId", MakeStr(flutter_webrtc_plugin::SanitizeUtf8ForFlutter(sourceId))},
                             {"kind", MakeStr("audioinput")},
                             {"autoGainControl",
                              MakeBool(audio_options.auto_gain_control)},
@@ -216,7 +239,9 @@ bool WebrtcMediaStream::GetUserVideo(const JNode& video, RTCMediaStream* stream,
   scoped_refptr<RTCVideoCapturer> capturer;
   for (int i = 0; i < nb_video_devices; ++i) {
     device->GetDeviceName(i, strNameUTF8, 256, strGuidUTF8, 256);
-    if (sourceId != "" && sourceId == std::string(strGuidUTF8)) {
+    if (sourceId != "" &&
+        sourceId == SanitizeDeviceIdFromAudioBuffers(strNameUTF8,
+                                                     strGuidUTF8)) {
       capturer = device->Create(strNameUTF8, i, width, height, fps);
       break;
     }
@@ -225,7 +250,7 @@ bool WebrtcMediaStream::GetUserVideo(const JNode& video, RTCMediaStream* stream,
   // 未匹配到指定设备 → 默认第 0 个, 并把 sourceId 更新为它的 guid(settings 里用)
   if (!capturer) {
     device->GetDeviceName(0, strNameUTF8, 256, strGuidUTF8, 256);
-    sourceId = strGuidUTF8;
+    sourceId = SanitizeDeviceIdFromAudioBuffers(strNameUTF8, strGuidUTF8);
     capturer = device->Create(strNameUTF8, 0, width, height, fps);
   }
   if (!capturer) return false;
@@ -253,7 +278,7 @@ bool WebrtcMediaStream::GetUserVideo(const JNode& video, RTCMediaStream* stream,
       {"label", MakeStr(track_id)},
       {"kind", MakeStr("video")},
       {"enabled", MakeBool(track->enabled())},
-      {"settings", MakeObj({{"deviceId", MakeStr(sourceId)},
+      {"settings", MakeObj({{"deviceId", MakeStr(flutter_webrtc_plugin::SanitizeUtf8ForFlutter(sourceId))},
                             {"kind", MakeStr("videoinput")},
                             {"width", MakeNum(width)},
                             {"height", MakeNum(height)},
@@ -276,9 +301,8 @@ std::string WebrtcMediaStream::GetSources() {
     int16_t recording = audio_device->RecordingDevices();
     for (int16_t i = 0; i < recording; ++i) {
       audio_device->RecordingDeviceName(i, name, guid);
-      std::string device_id = strlen(guid) > 0 ? std::string(guid)
-                                               : std::string(name);
-      sources.arr.push_back(MakeObj({{"label", MakeStr(std::string(name))},
+      std::string device_id = SanitizeDeviceIdFromAudioBuffers(name, guid);
+      sources.arr.push_back(MakeObj({{"label", MakeStr(SanitizeLabel(name))},
                                      {"deviceId", MakeStr(device_id)},
                                      {"facing", MakeStr("")},
                                      {"kind", MakeStr("audioinput")}}));
@@ -287,9 +311,8 @@ std::string WebrtcMediaStream::GetSources() {
     int16_t playout = audio_device->PlayoutDevices();
     for (int16_t i = 0; i < playout; ++i) {
       audio_device->PlayoutDeviceName(i, name, guid);
-      std::string device_id = strlen(guid) > 0 ? std::string(guid)
-                                               : std::string(name);
-      sources.arr.push_back(MakeObj({{"label", MakeStr(std::string(name))},
+      std::string device_id = SanitizeDeviceIdFromAudioBuffers(name, guid);
+      sources.arr.push_back(MakeObj({{"label", MakeStr(SanitizeLabel(name))},
                                      {"deviceId", MakeStr(device_id)},
                                      {"facing", MakeStr("")},
                                      {"kind", MakeStr("audiooutput")}}));
@@ -303,8 +326,9 @@ std::string WebrtcMediaStream::GetSources() {
     int nb = video_device->NumberOfDevices();
     for (int i = 0; i < nb; ++i) {
       video_device->GetDeviceName(i, name, 256, guid, 256);
-      sources.arr.push_back(MakeObj({{"label", MakeStr(std::string(name))},
-                                     {"deviceId", MakeStr(std::string(guid))},
+      std::string device_id = SanitizeDeviceIdFromAudioBuffers(name, guid);
+      sources.arr.push_back(MakeObj({{"label", MakeStr(SanitizeLabel(name))},
+                                     {"deviceId", MakeStr(device_id)},
                                      {"facing", MakeStr(i == 1 ? "front" : "back")},
                                      {"kind", MakeStr("videoinput")}}));
     }
@@ -325,7 +349,7 @@ bool WebrtcMediaStream::SelectAudioInput(const std::string& device_id) {
   int16_t recording = audio_device->RecordingDevices();
   for (int16_t i = 0; i < recording; ++i) {
     audio_device->RecordingDeviceName(i, name, guid);
-    std::string cur = strlen(guid) > 0 ? std::string(guid) : std::string(name);
+    std::string cur = SanitizeDeviceIdFromAudioBuffers(name, guid);
     if (!device_id.empty() && device_id == cur) {
       audio_device->SetRecordingDevice(i);
       return true;
@@ -343,7 +367,7 @@ bool WebrtcMediaStream::SelectAudioOutput(const std::string& device_id) {
   int16_t playout = audio_device->PlayoutDevices();
   for (int16_t i = 0; i < playout; ++i) {
     audio_device->PlayoutDeviceName(i, name, guid);
-    std::string cur = strlen(guid) > 0 ? std::string(guid) : std::string(name);
+    std::string cur = SanitizeDeviceIdFromAudioBuffers(name, guid);
     if (!device_id.empty() && device_id == cur) {
       audio_device->SetPlayoutDevice(i);
       return true;
@@ -432,6 +456,10 @@ void WebrtcMediaStream::MediaStreamDispose(const std::string& stream_id) {
     }
   }
   base_->RemoveStreamForId(stream_id);
+
+  // 桌面采集器已释放(等同上游桌面采集停止)→ 若该流带 getDisplayMedia 的
+  // loopback 系统音频采集, 一并停掉(参考上游 FlutterScreenCapture::OnStop)。
+  base_->StopScreenLoopback();
 }
 
 bool WebrtcMediaStream::MediaStreamTrackSetEnable(const std::string& track_id,

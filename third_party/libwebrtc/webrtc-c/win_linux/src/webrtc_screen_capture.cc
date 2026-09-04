@@ -3,6 +3,7 @@
 
 #include "webrtc_screen_capture.h"
 
+#include "flutter_utf8_sanitize.h"
 #include "rtc_desktop_capturer.h"
 #include "rtc_desktop_device.h"
 #include "rtc_desktop_media_list.h"
@@ -24,6 +25,19 @@ static void* UserDataForSourceId(const std::string& source_id) {
 }
 
 WebrtcScreenCapture::WebrtcScreenCapture(WebrtcBase* base) : base_(base) {}
+
+WebrtcScreenCapture::~WebrtcScreenCapture() {
+  StopLoopback();
+}
+
+void WebrtcScreenCapture::StopLoopback() {
+  // 参考上游 FlutterScreenCapture::OnStop: 停 loopback 采集并清引用
+  if (loopback_capturer_) {
+    loopback_capturer_->Stop();
+    loopback_capturer_.reset();
+    loopback_audio_source_ = nullptr;
+  }
+}
 
 bool WebrtcScreenCapture::BuildDesktopSourcesList(const JNode& types,
                                                   bool force_reload) {
@@ -69,7 +83,8 @@ std::string WebrtcScreenCapture::GetDesktopSources(const JNode& types) {
   for (auto& source : base_->desktop_sources_) {
     list.arr.push_back(MakeObj({
         {"id", MakeStr(source->id().std_string())},
-        {"name", MakeStr(source->name().std_string())},
+        {"name", MakeStr(flutter_webrtc_plugin::SanitizeUtf8ForFlutter(
+                     source->name().std_string()))},
         {"type", MakeStr(source->type() == kWindow ? "window" : "screen")},
         {"thumbnailSize", MakeObj({{"width", MakeNum(0)},
                                    {"height", MakeNum(0)}})},
@@ -88,6 +103,10 @@ std::string WebrtcScreenCapture::UpdateDesktopSources(const JNode& types) {
 }
 
 std::string WebrtcScreenCapture::GetDisplayMedia(const JNode& constraints) {
+  // 停掉上一次可能残留的 loopback 音频采集(参考上游 GetDisplayMedia 开头)。
+  // 无论本次成功失败, 旧采集先停, 避免流销毁/失败 return 后线程滞留。
+  StopLoopback();
+
   std::string source_id = "0";
   double fps = 30.0;
   bool show_cursor = true;
@@ -106,8 +125,15 @@ std::string WebrtcScreenCapture::GetDisplayMedia(const JNode& constraints) {
         fps = frame_rate->n;
       }
     }
-    std::string cursor = video->StrOf("cursor");
-    if (!cursor.empty() && cursor == "never") show_cursor = false;
+    // Accept both the spec's string form ("always"/"never") and a plain bool.
+    // Only an explicitly supplied constraint moves off the default, so callers
+    // that pass no "cursor" key keep exactly the behaviour they have today.
+    const JNode* cursor = video->Get("cursor");
+    if (cursor && cursor->type == JNode::kStr && !cursor->s.empty()) {
+      show_cursor = (cursor->s == "always");
+    } else if (cursor && cursor->type == JNode::kBool) {
+      show_cursor = cursor->b;
+    }
   }
 
   // 源列表为空时先构建(默认 screen + window), 保证 getDisplayMedia 可独立调用
@@ -165,11 +191,63 @@ std::string WebrtcScreenCapture::GetDisplayMedia(const JNode& constraints) {
 
   desktop_capturer->Start(uint32_t(fps));
 
+  // ---- AUDIO: getDisplayMedia {audio:true} 时同采系统音频进同一流(参考上游) ----
+  // 先停上次残留的 loopback(参考上游 GetDisplayMedia 开头)。
+  // Disable all audio processing: AEC/AGC/NS are designed for microphone input;
+  // applied to system audio they treat the content as echo/noise and destroy it.
+  bool capture_audio = false;
+  const JNode* audio = constraints.Get("audio");
+  if (audio) {
+    if (audio->type == JNode::kBool) {
+      capture_audio = audio->b;
+    } else if (audio->type == JNode::kObj) {
+      capture_audio = true;
+    }
+  }
+
+  JNode audio_tracks;
+  audio_tracks.type = JNode::kArr;
+  if (capture_audio) {
+    RTCAudioOptions loopback_opts;
+    loopback_opts.echo_cancellation = false;
+    loopback_opts.auto_gain_control = false;
+    loopback_opts.noise_suppression = false;
+    const std::string loopback_source_label =
+        "screen_loopback_input_" + base_->GenerateUUID();
+    loopback_audio_source_ = base_->factory_->CreateAudioSource(
+        loopback_source_label.c_str(), RTCAudioSource::SourceType::kCustom,
+        loopback_opts);
+
+    std::string audio_uuid = base_->GenerateUUID();
+    scoped_refptr<RTCAudioTrack> audio_track =
+        base_->factory_->CreateAudioTrack(loopback_audio_source_,
+                                          audio_uuid.c_str());
+
+    // source_id 是桌面源 id: 屏幕源(如 "0")走全系统音频; 若 id 恰为窗口句柄
+    // 字符串, ApplicationLoopbackCapturer 会尝试按进程隔离(上游语义)。
+    loopback_capturer_ = flutter_webrtc_plugin::CreateLoopbackCapturer(source_id);
+
+    if (loopback_capturer_ &&
+        loopback_capturer_->Start(loopback_audio_source_)) {
+      audio_tracks.arr.push_back(MakeObj({
+          {"id", MakeStr(audio_track->id().std_string())},
+          {"label", MakeStr(audio_track->id().std_string())},
+          {"kind", MakeStr(audio_track->kind().std_string())},
+          {"enabled", MakeBool(audio_track->enabled())},
+      }));
+
+      stream->AddTrack(audio_track);
+      base_->local_tracks_[audio_track->id().std_string()] = audio_track;
+    } else {
+      // Loopback init failed or not supported — continue without audio.
+      loopback_capturer_.reset();
+      loopback_audio_source_ = nullptr;
+    }
+  }
+
   JNode result;
   result.type = JNode::kObj;
   result.obj.emplace_back("streamId", MakeStr(uuid));
-  JNode audio_tracks;
-  audio_tracks.type = JNode::kArr;
   result.obj.emplace_back("audioTracks", std::move(audio_tracks));
   JNode video_tracks;
   video_tracks.type = JNode::kArr;
@@ -238,7 +316,8 @@ void WebrtcScreenCapture::FireDesktopEvent(const std::string& event,
 void WebrtcScreenCapture::OnMediaSourceAdded(scoped_refptr<MediaSource> source) {
   FireDesktopEvent("desktopSourceAdded", MakeObj({
       {"id", MakeStr(source->id().std_string())},
-      {"name", MakeStr(source->name().std_string())},
+      {"name", MakeStr(flutter_webrtc_plugin::SanitizeUtf8ForFlutter(
+                   source->name().std_string()))},
       {"type", MakeStr(source->type() == kWindow ? "window" : "screen")},
       {"thumbnailSize", MakeObj({{"width", MakeNum(0)}, {"height", MakeNum(0)}})},
   }));
@@ -253,7 +332,8 @@ void WebrtcScreenCapture::OnMediaSourceNameChanged(
     scoped_refptr<MediaSource> source) {
   FireDesktopEvent("desktopSourceNameChanged", MakeObj({
       {"id", MakeStr(source->id().std_string())},
-      {"name", MakeStr(source->name().std_string())},
+      {"name", MakeStr(flutter_webrtc_plugin::SanitizeUtf8ForFlutter(
+                   source->name().std_string()))},
   }));
 }
 

@@ -17,6 +17,15 @@ Algorithm AlgorithmFromInt(int algorithm) {
   }
 }
 
+// 参考 KeyDerivationAlgorithmFromInt: 0=kPBKDF2, 1=kHKDF
+KeyDerivationAlgorithm KeyDerivationAlgorithmFromInt(int algorithm) {
+  switch (algorithm) {
+    case 0: return KeyDerivationAlgorithm::kPBKDF2;
+    case 1: return KeyDerivationAlgorithm::kHKDF;
+    default: return KeyDerivationAlgorithm::kPBKDF2;
+  }
+}
+
 // 参考 frameCryptionStateToString
 const char* FrameCryptionStateToString(RTCFrameCryptionState state) {
   switch (state) {
@@ -179,6 +188,10 @@ std::string WebrtcFrameCryptor::FrameCryptorFactoryCreateKeyProvider(
   const JNode* discard = options->Get("discardFrameWhenCryptorNotReady");
   if (discard && discard->type == JNode::kBool)
     kpo.discard_frame_when_cryptor_not_ready = discard->b;
+  const JNode* kdf = options->Get("keyDerivationAlgorithm");
+  if (kdf && kdf->type == JNode::kNum)
+    kpo.key_derivation_algorithm =
+        KeyDerivationAlgorithmFromInt(static_cast<int>(kdf->n));
 
   scoped_refptr<KeyProvider> key_provider = KeyProvider::Create(&kpo);
   if (!key_provider) return "";
@@ -286,6 +299,12 @@ std::string WebrtcFrameCryptor::KeyProviderDispose(const JNode& constraints) {
   if (it == key_providers_.end()) return "";
   key_providers_.erase(it);
   return ToJson(MakeObj({{"result", MakeStr("success")}}));
+}
+
+scoped_refptr<KeyProvider> WebrtcFrameCryptor::GetKeyProviderForId(
+    const std::string& key_provider_id) {
+  auto it = key_providers_.find(key_provider_id);
+  return it == key_providers_.end() ? nullptr : it->second;
 }
 
 }  // namespace webrtc

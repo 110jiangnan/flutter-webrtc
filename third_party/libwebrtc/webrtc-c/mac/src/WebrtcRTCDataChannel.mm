@@ -68,12 +68,13 @@
     peerConnection.dataChannels[flutterId] = dataChannel;
     dataChannel.flutterChannelId = flutterId;
     dataChannel.delegate = self;
-    dataChannel.eventQueue = nil;
-
-    WebrtcEventCallback* eventCallback = [WebrtcEventCallback new];
-    eventCallback.cb = eventCb;
-    eventCallback.userData = userData;
-    dataChannel.webrtcEventCallback = eventCallback;
+    @synchronized(dataChannel) {
+      dataChannel.eventQueue = nil;
+      WebrtcEventCallback* eventCallback = [WebrtcEventCallback new];
+      eventCallback.cb = eventCb;
+      eventCallback.userData = userData;
+      dataChannel.webrtcEventCallback = eventCallback;
+    }
 
     result(@{
       @"label" : label,
@@ -91,7 +92,9 @@
   if (dataChannel) {
     [dataChannel close];
     [dataChannels removeObjectForKey:dataChannelId];
-    dataChannel.webrtcEventCallback = nil;
+    @synchronized(dataChannel) {
+      dataChannel.webrtcEventCallback = nil;
+    }
   }
 }
 
@@ -145,19 +148,23 @@
 }
 
 - (void)sendEvent:(id)event binary:(NSData*)binary withChannel:(RTCDataChannel*)channel {
-  if (channel.webrtcEventCallback) {
-    [channel.webrtcEventCallback post:event binary:binary];
-  } else {
-    if (!channel.eventQueue) {
-      channel.eventQueue = [NSMutableArray array];
+  // 对齐上游 darwin: eventQueue/回调在回调线程与主线程(创建/关闭)间并发访问,
+  // 用 @synchronized(channel) 保护。webrtcEventCallback 就绪后事件直发不走队列。
+  @synchronized(channel) {
+    if (channel.webrtcEventCallback) {
+      [channel.webrtcEventCallback post:event binary:binary];
+    } else {
+      if (!channel.eventQueue) {
+        channel.eventQueue = [NSMutableArray array];
+      }
+      // 队列暂存时 binary 放 event 的 data 字段(base64 兜底)
+      if (binary) {
+        NSMutableDictionary* m = [event mutableCopy];
+        m[@"data"] = binary;
+        event = m;
+      }
+      channel.eventQueue = [channel.eventQueue arrayByAddingObject:event];
     }
-    // 队列暂存时 binary 放 event 的 data 字段(base64 兜底)
-    if (binary) {
-      NSMutableDictionary* m = [event mutableCopy];
-      m[@"data"] = binary;
-      event = m;
-    }
-    channel.eventQueue = [channel.eventQueue arrayByAddingObject:event];
   }
 }
 

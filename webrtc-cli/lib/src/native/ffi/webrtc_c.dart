@@ -26,6 +26,7 @@ part 'webrtc_c_pc.dart';
 part 'webrtc_c_datachannel.dart';
 part 'webrtc_c_desktop.dart';
 part 'webrtc_c_framecryptor.dart';
+part 'webrtc_c_datapacketcryptor.dart';
 
 /// 底层 FFI 的对外门面。
 class WebrtcC {
@@ -104,6 +105,9 @@ class WebrtcC {
   static int setExternalFrameCallback(
           Pointer<Void> factory, int callbackAddress) =>
       WebrtcCDesktop.setExternalFrameCallback(factory, callbackAddress);
+  // 请求/检查屏幕录制权限(mac 弹授权框; win/linux 恒 true)
+  static bool requestCapturePermission(Pointer<Void> factory) =>
+      WebrtcCDesktop.requestCapturePermission(factory);
 
   // ---- peerconnection(PC 域) ----
   static Pointer<Void> createPeerConnection(Pointer<Void> factory,
@@ -252,6 +256,18 @@ class WebrtcC {
   static Map<String, dynamic>? keyProviderDispose(
       Pointer<Void> factory, String constraintsJson) =>
       WebrtcCFrameCryptor.keyProviderDispose(factory, constraintsJson);
+  static Map<String, dynamic>? dataPacketCryptorCreate(
+      Pointer<Void> factory, String constraintsJson) =>
+      WebrtcCDataPacketCryptor.create(factory, constraintsJson);
+  static Map<String, dynamic>? dataPacketCryptorDispose(
+      Pointer<Void> factory, String constraintsJson) =>
+      WebrtcCDataPacketCryptor.dispose(factory, constraintsJson);
+  static Map<String, dynamic>? dataPacketCryptorEncrypt(
+      Pointer<Void> factory, String constraintsJson) =>
+      WebrtcCDataPacketCryptor.encrypt(factory, constraintsJson);
+  static Map<String, dynamic>? dataPacketCryptorDecrypt(
+      Pointer<Void> factory, String constraintsJson) =>
+      WebrtcCDataPacketCryptor.decrypt(factory, constraintsJson);
 }
 
 /// 运行时单例: 持有全局 factory 句柄。

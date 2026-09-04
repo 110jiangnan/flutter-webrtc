@@ -13,6 +13,7 @@
 #include "webrtc_common.h"
 #include "webrtc_data_channel.h"
 #include "webrtc_frame_cryptor.h"
+#include "webrtc_data_packet_cryptor.h"
 #include "webrtc_media_stream.h"
 #include "webrtc_peerconnection.h"
 #include "webrtc_screen_capture.h"
@@ -47,6 +48,24 @@ static char* FrameCryptorCall(webrtc_handle factory, const char* json, Fn fn) {
   WebrtcBase* base = AsBase(factory);
   if (!base || !json) return nullptr;
   std::string s = fn(*AsFrameCryptor(base), ParseJson(json));
+  return s.empty() ? nullptr : StrDup(s);
+}
+
+// 常驻 data channel 包加密对象(懒创建): 跨调用保存 data_packet_cryptors_ 注册表。
+static WebrtcDataPacketCryptor* AsDataPacketCryptor(WebrtcBase* base) {
+  if (!base->data_packet_cryptor_)
+    base->data_packet_cryptor_ =
+        std::make_unique<WebrtcDataPacketCryptor>(base);
+  return base->data_packet_cryptor_.get();
+}
+
+// 通用分发(模板): 取常驻 DataPacketCryptor, 执行 fn, 返回 JSON 字符串
+template <typename Fn>
+static char* DataPacketCryptorCall(webrtc_handle factory, const char* json,
+                                   Fn fn) {
+  WebrtcBase* base = AsBase(factory);
+  if (!base || !json) return nullptr;
+  std::string s = fn(*AsDataPacketCryptor(base), ParseJson(json));
   return s.empty() ? nullptr : StrDup(s);
 }
 
@@ -512,6 +531,13 @@ char* webrtc_get_display_media(webrtc_handle factory,
   return json.empty() ? nullptr : StrDup(json);
 }
 
+char* webrtc_request_capture_permission(webrtc_handle factory) {
+  // win/linux 桌面采集无需系统授权, 恒视为就绪(上游该能力为 darwin/mac 专属)。
+  WebrtcBase* base = AsBase(factory);
+  if (!base) return nullptr;
+  return StrDup(ToJson(MakeObj({{"result", MakeBool(true)}})));
+}
+
 // 挂/摘桌面采集外部帧回调(锁屏帧替换): callback_ptr=0 清除恢复桌面采集。
 // 无采集器(getDisplayMedia 未启动)返回 -1, 成功返回 0。
 int webrtc_set_external_frame_callback(webrtc_handle factory,
@@ -673,6 +699,41 @@ char* webrtc_key_provider_dispose(webrtc_handle factory,
                                                         const JNode& c) {
     return fc.KeyProviderDispose(c);
   });
+}
+
+// ================= data channel 包 E2EE(DataPacketCryptor) =================
+
+char* webrtc_data_packet_cryptor_create(webrtc_handle factory,
+                                        const char* constraints_json) {
+  return DataPacketCryptorCall(factory, constraints_json,
+                               [](WebrtcDataPacketCryptor& dc,
+                                  const JNode& c) {
+                                 return dc.CreateDataPacketCryptor(c);
+                               });
+}
+char* webrtc_data_packet_cryptor_dispose(webrtc_handle factory,
+                                         const char* constraints_json) {
+  return DataPacketCryptorCall(factory, constraints_json,
+                               [](WebrtcDataPacketCryptor& dc,
+                                  const JNode& c) {
+                                 return dc.DataPacketCryptorDispose(c);
+                               });
+}
+char* webrtc_data_packet_cryptor_encrypt(webrtc_handle factory,
+                                         const char* constraints_json) {
+  return DataPacketCryptorCall(factory, constraints_json,
+                               [](WebrtcDataPacketCryptor& dc,
+                                  const JNode& c) {
+                                 return dc.DataPacketCryptorEncrypt(c);
+                               });
+}
+char* webrtc_data_packet_cryptor_decrypt(webrtc_handle factory,
+                                         const char* constraints_json) {
+  return DataPacketCryptorCall(factory, constraints_json,
+                               [](WebrtcDataPacketCryptor& dc,
+                                  const JNode& c) {
+                                 return dc.DataPacketCryptorDecrypt(c);
+                               });
 }
 
 }  // extern "C"

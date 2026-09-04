@@ -271,7 +271,8 @@ WEBRTC_API char* webrtc_frame_cryptor_get_enabled(webrtc_handle factory,
                                                   const char* constraints_json);
 WEBRTC_API char* webrtc_frame_cryptor_dispose(webrtc_handle factory,
                                               const char* constraints_json);
-/* KeyProvider: 创建(从 keyProviderOptions)→ {"keyProviderId":uuid} */
+/* KeyProvider: 创建(从 keyProviderOptions, 支持 keyDerivationAlgorithm: 0=PBKDF2|1=HKDF)
+ * → {"keyProviderId":uuid} */
 WEBRTC_API char* webrtc_frame_cryptor_factory_create_key_provider(
     webrtc_handle factory, const char* constraints_json);
 WEBRTC_API char* webrtc_key_provider_set_shared_key(webrtc_handle factory,
@@ -290,6 +291,25 @@ WEBRTC_API char* webrtc_key_provider_set_sif_trailer(webrtc_handle factory,
                                                      const char* constraints_json);
 WEBRTC_API char* webrtc_key_provider_dispose(webrtc_handle factory,
                                              const char* constraints_json);
+
+/* ---- data channel 包 E2EE(对齐 flutter_data_packet_cryptor) ----
+ * 与 FrameCryptor(加密媒体轨)两套; 复用 FrameCryptor 创建的 KeyProvider。
+ * create constraints_json: {"keyProviderId":uuid,"algorithm":0|1}
+ *   → {"dataCryptorId":uuid}, 失败 ""。
+ * dispose: {"dataCryptorId":uuid} → {"result":"success"}
+ * encrypt: {"dataCryptorId":uuid,"participantId":str,"keyIndex":n,"data":[...]}
+ *   → {"data":[...],"iv":[...],"keyIndex":n}
+ * decrypt: {"dataCryptorId":uuid,"participantId":str,"keyIndex":n,
+ *           "data":[...],"iv":[...]} → {"data":[...]}
+ * 失败均返回 ""。 */
+WEBRTC_API char* webrtc_data_packet_cryptor_create(
+    webrtc_handle factory, const char* constraints_json);
+WEBRTC_API char* webrtc_data_packet_cryptor_dispose(
+    webrtc_handle factory, const char* constraints_json);
+WEBRTC_API char* webrtc_data_packet_cryptor_encrypt(
+    webrtc_handle factory, const char* constraints_json);
+WEBRTC_API char* webrtc_data_packet_cryptor_decrypt(
+    webrtc_handle factory, const char* constraints_json);
 
 /* ---- 被控: 系统音频采集(扬声器 loopback) ----
  * params_json: {"deviceId":"","streamId":"","enablePcmRecording":false,"pcmFilePath":""}
@@ -314,6 +334,10 @@ WEBRTC_API char* webrtc_get_desktop_sources(webrtc_handle factory,
  * {"result":true}, 失败 NULL */
 WEBRTC_API char* webrtc_update_desktop_sources(webrtc_handle factory,
                                                const char* types_json);
+/* 请求/检查屏幕录制权限(对齐上游 requestCapturePermission, mac 专属语义)。
+ * mac: 已授权返回 {"result":true}; 未授权弹系统授权框并返回用户选择。
+ * win/linux: 桌面采集无需权限, 恒返回 {"result":true}。失败 NULL。 */
+WEBRTC_API char* webrtc_request_capture_permission(webrtc_handle factory);
 /* constraints_json:
  *   {"video":{"deviceId":{"exact":"<sourceId>"},"mandatory":{"frameRate":30},"cursor":"never"}}
  * → {"streamId","audioTracks":[],"videoTracks":[{id,label,kind,enabled}]}, 失败 NULL

@@ -5,12 +5,17 @@
 #include "webrtc_data_channel.h"  // 析构 data_channel_observers_ 需要完整类型
 #include "webrtc_screen_capture.h"  // 析构 screen_capture_ 需要完整类型
 #include "webrtc_frame_cryptor.h"  // 析构 frame_cryptor_ 需要完整类型
+#include "webrtc_data_packet_cryptor.h"  // 析构 data_packet_cryptor_ 需要完整类型
 
 namespace webrtc {
 
 using namespace libwebrtc;
 
 WebrtcBase::WebrtcBase() {}
+
+void WebrtcBase::StopScreenLoopback() {
+  if (screen_capture_) screen_capture_->StopLoopback();
+}
 
 WebrtcBase::~WebrtcBase() {
   local_streams_.clear();
@@ -20,6 +25,7 @@ WebrtcBase::~WebrtcBase() {
   data_channel_observers_.clear();
   screen_capture_.reset();
   frame_cryptor_.reset();
+  data_packet_cryptor_.reset();
   peerconnections_.clear();
   peerconnection_observers_.clear();
 }
@@ -150,6 +156,10 @@ void WebrtcBase::ParseRTCConfiguration(const JNode& map,
   const JNode* ipv6 = map.Get("maxIPv6Networks");
   if (ipv6 && ipv6->type == JNode::kNum)
     conf.max_ipv6_networks = static_cast<int>(ipv6->n);
+
+  // enableDscp(参考 749b356)
+  const JNode* dscp = map.Get("enableDscp");
+  if (dscp && dscp->type == JNode::kBool) conf.enable_dscp = dscp->b;
 }
 
 scoped_refptr<RTCRtpSender> WebrtcBase::GetRtpSenderById(

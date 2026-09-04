@@ -153,6 +153,8 @@ typedef _GetDesktopSourcesNative = Pointer<Utf8> Function(
     Pointer<Void> factory, Pointer<Utf8> typesJson);
 typedef _GetDisplayMediaNative = Pointer<Utf8> Function(
     Pointer<Void> factory, Pointer<Utf8> constraintsJson);
+// 屏幕录制权限请求(mac): (factory) → malloc JSON, 无 json 入参
+typedef _CapturePermissionNative = Pointer<Utf8> Function(Pointer<Void> factory);
 // 挂/摘外部帧回调: callbackPtr 为函数指针地址(0 清除), 返回 0 成功 -1 无采集器
 typedef _SetExternalFrameCallbackNative = Int32 Function(
     Pointer<Void> factory, Int64 callbackPtr, Pointer<Void> userData);

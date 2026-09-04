@@ -7,6 +7,7 @@
  * 本文件 = 单例中枢 + JSON/C 桥 + 顶层 C ABI 入口层。
  */
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>  // CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess
 #import <WebRTC/WebRTC.h>
 #import <WebRTC/RTCFieldTrials.h>
 #import <WebRTC/RTCLogging.h>
@@ -1898,6 +1899,28 @@ char* webrtc_get_display_media(webrtc_handle factory, const char* constraints_js
   }];
   return WebrtcMallocString(out ? [[NSString alloc] initWithData:WebrtcJsonData(out)
                                                         encoding:NSUTF8StringEncoding] : nil);
+}
+
+char* webrtc_request_capture_permission(webrtc_handle factory) {
+  // 照抄上游 requestCapturePermission(mac): 已授权返回 true; 未授权弹系统授权框。
+  // CGPreflight/CGRequestScreenCaptureAccess 需 macOS 10.15+。
+  // 注意: 不 dispatch 到主队列 —— webrtc-cli 是 Dart CLI, 常无主 RunLoop,
+  // dispatch_sync(main) 会死锁; 系统授权框由系统进程弹, 任意线程调 CGRequest 均可。
+  if (!factory) return NULL;
+  BOOL granted = NO;
+  if (@available(macOS 10.15, *)) {
+    if (CGPreflightScreenCaptureAccess()) {
+      granted = YES;
+    } else {
+      granted = CGRequestScreenCaptureAccess();
+    }
+  } else {
+    // 10.15 之前无屏幕录制权限模型, 视为已授权。
+    granted = YES;
+  }
+  NSDictionary* out = @{@"result" : @(granted)};
+  return WebrtcMallocString([[NSString alloc] initWithData:WebrtcJsonData(out)
+                                                  encoding:NSUTF8StringEncoding]);
 }
 
 char* webrtc_create_data_channel(webrtc_handle pc, const char* label, const char* init_json) {
